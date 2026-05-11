@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard Externo | RPA Clientes Irregulares</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Telemetria Sanitizada</p>
+        <h1>RPA Clientes Irregulares</h1>
+        <p class="subtitle">Dashboard externo apenas com métricas operacionais. Sem CIFs, caminhos FTP, nomes de ficheiros ou logs brutos.</p>
+      </div>
+      <div class="status-pill" id="connectionStatus">A carregar...</div>
+    </section>
+
+    <section class="current-card">
+      <div>
+        <p class="label">Estado Actual</p>
+        <h2 id="estado">-</h2>
+      </div>
+      <div class="meta-grid">
+        <div><span>Instância</span><strong id="instanceName">-</strong></div>
+        <div><span>Execução</span><strong id="idExecucao">-</strong></div>
+        <div><span>Campo Actual</span><strong id="campoAtual">-</strong></div>
+        <div><span>Ficheiro Do CIF Actual</span><strong id="ficheiroAtual">-</strong></div>
+        <div><span>Última Actualização</span><strong id="receivedAt">-</strong></div>
+        <div><span>Último Evento</span><strong id="ultimoEvento">-</strong></div>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-header">
+          <span>Progresso</span>
+          <strong id="progressoLabel">0%</strong>
+        </div>
+        <div class="progress"><div id="progressoBar"></div></div>
+      </div>
+    </section>
+
+    <section class="cards">
+      <article class="card"><span>CIFs Recebidos</span><strong id="cifsRecebidos">0</strong></article>
+      <article class="card"><span>CIFs Processados</span><strong id="cifsProcessados">0</strong></article>
+      <article class="card"><span>CIFs Sucesso</span><strong id="cifsSucesso">0</strong><small id="sucessoPercentual">0%</small></article>
+      <article class="card"><span>CIFs Não Encontrado</span><strong id="cifsNaoEncontrado">0</strong></article>
+      <article class="card"><span>CIFs Inválidos</span><strong id="cifsInvalidos">0</strong></article>
+      <article class="card"><span>CIFs Com Erro</span><strong id="cifsComErro">0</strong></article>
+      <article class="card"><span>Ficheiros Na Fila</span><strong id="ficheirosNaFila">0</strong></article>
+      <article class="card"><span>Ficheiros Avaliados</span><strong id="ficheirosAvaliados">0</strong></article>
+      <article class="card"><span>FTP 550</span><strong id="ficheirosFtp550">0</strong></article>
+      <article class="card"><span>Requests Gemini</span><strong id="requestsGemini">0</strong></article>
+      <article class="card"><span>Timeouts Do Agente</span><strong id="timeoutsAgente">0</strong></article>
+      <article class="card"><span>Erros Do Agente/API</span><strong id="errosApi">0</strong></article>
+    </section>
+
+    <section class="history-section">
+      <div class="section-header">
+        <h2>Histórico Recente</h2>
+        <p>Últimos pacotes de telemetria recebidos.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Recebido Em</th>
+              <th>Estado</th>
+              <th>Progresso</th>
+              <th>CIFs Processados</th>
+              <th>Sucesso</th>
+              <th>Não Encontrado</th>
+              <th>Erros API</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody">
+            <tr><td colspan="7">Sem dados ainda.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
