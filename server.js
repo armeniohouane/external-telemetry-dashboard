@@ -104,7 +104,7 @@ function validateTelemetry(payload) {
     return 'Payload deve ser um objecto JSON.';
   }
 
-  const dangerousFields = ['cif', 'cliente', 'nomeCliente', 'caminho', 'filePath', 'ficheiro', 'fileName', 'prompt', 'rawResponse', 'logs'];
+    const dangerousFields = ['cif', 'cliente', 'nomeCliente', 'caminho', 'filePath', 'ficheiro', 'fileName', 'prompt', 'rawResponse'];
   const lowerKeys = Object.keys(payload).map(k => k.toLowerCase());
   for (const field of dangerousFields) {
     if (lowerKeys.includes(field.toLowerCase())) {
@@ -116,36 +116,203 @@ function validateTelemetry(payload) {
 }
 
 function sanitizePayload(payload) {
-  const allowed = {
-    receivedAt: new Date().toISOString(),
-    instanceName: payload.instanceName ?? null,
-    idExecucao: payload.idExecucao ?? null,
-    estado: payload.estado ?? null,
-    campoAtual: payload.campoAtual ?? null,
-    ficheiroAtualIndice: payload.ficheiroAtualIndice ?? null,
-    ficheiroAtualTotal: payload.ficheiroAtualTotal ?? null,
-    cifsRecebidos: payload.cifsRecebidos ?? 0,
-    cifsProcessados: payload.cifsProcessados ?? 0,
-    cifsSucesso: payload.cifsSucesso ?? 0,
-    cifsNaoEncontrado: payload.cifsNaoEncontrado ?? 0,
-    cifsInvalidos: payload.cifsInvalidos ?? 0,
-    cifsComErro: payload.cifsComErro ?? 0,
-    ficheirosNaFila: payload.ficheirosNaFila ?? 0,
-    ficheirosAvaliados: payload.ficheirosAvaliados ?? 0,
-    ficheirosFtp550: payload.ficheirosFtp550 ?? 0,
-    requestsGemini: payload.requestsGemini ?? 0,
-    timeoutsAgente: payload.timeoutsAgente ?? 0,
-    errosApi: payload.errosApi ?? 0,
-    progressoPercentual: payload.progressoPercentual ?? 0,
-    sucessoPercentual: payload.sucessoPercentual ?? 0,
-    ultimoEvento: payload.ultimoEvento ?? null,
-    categoriaUltimoErro: payload.categoriaUltimoErro ?? null,
-    dataHoraOrigem: payload.dataHoraOrigem ?? null
-  };
+    const metrics = payload.metrics || payload.Metrics || {};
 
-  return allowed;
+    const recentLogsRaw =
+        payload.recentLogs ||
+        payload.RecentLogs ||
+        payload.logs ||
+        payload.Logs ||
+        [];
+
+    const recentLogs = Array.isArray(recentLogsRaw)
+        ? recentLogsRaw.slice(-200).map(item => {
+            if (typeof item === 'string') {
+                return {
+                    timestamp: null,
+                    level: 'INF',
+                    message: item
+                };
+            }
+
+            return {
+                sequence: item.sequence ?? item.Sequence ?? null,
+                timestamp: item.timestamp ?? item.Timestamp ?? null,
+                level: item.level ?? item.Level ?? 'INF',
+                sourceContext: item.sourceContext ?? item.SourceContext ?? null,
+                message: item.message ?? item.Message ?? '',
+                exception: item.exception ?? item.Exception ?? null
+            };
+        })
+        : [];
+
+    const telemetry = {
+        receivedAt: new Date().toISOString(),
+
+        instanceName:
+            payload.instanceName ??
+            payload.InstanceName ??
+            null,
+
+        idExecucao:
+            payload.idExecucao ??
+            payload.IdExecucao ??
+            payload.currentExecutionId ??
+            payload.CurrentExecutionId ??
+            null,
+
+        estado:
+            payload.estado ??
+            payload.Estado ??
+            payload.status ??
+            payload.Status ??
+            null,
+
+        campoAtual:
+            payload.campoAtual ??
+            payload.CampoAtual ??
+            payload.currentCampo ??
+            payload.CurrentCampo ??
+            null,
+
+        ficheiroAtualIndice:
+            payload.ficheiroAtualIndice ??
+            payload.FicheiroAtualIndice ??
+            payload.currentCifFileIndex ??
+            payload.CurrentCifFileIndex ??
+            null,
+
+        ficheiroAtualTotal:
+            payload.ficheiroAtualTotal ??
+            payload.FicheiroAtualTotal ??
+            payload.currentCifTotalFiles ??
+            payload.CurrentCifTotalFiles ??
+            null,
+
+        cifsRecebidos:
+            payload.cifsRecebidos ??
+            payload.CifsRecebidos ??
+            metrics.cifsRecebidos ??
+            metrics.CifsRecebidos ??
+            0,
+
+        cifsProcessados:
+            payload.cifsProcessados ??
+            payload.CifsProcessados ??
+            metrics.cifsProcessados ??
+            metrics.CifsProcessados ??
+            0,
+
+        cifsSucesso:
+            payload.cifsSucesso ??
+            payload.CifsSucesso ??
+            metrics.cifsSucesso ??
+            metrics.CifsSucesso ??
+            0,
+
+        cifsNaoEncontrado:
+            payload.cifsNaoEncontrado ??
+            payload.CifsNaoEncontrado ??
+            metrics.cifsNaoEncontrado ??
+            metrics.CifsNaoEncontrado ??
+            0,
+
+        cifsInvalidos:
+            payload.cifsInvalidos ??
+            payload.CifsInvalidos ??
+            metrics.cifsInvalidos ??
+            metrics.CifsInvalidos ??
+            0,
+
+        cifsComErro:
+            payload.cifsComErro ??
+            payload.CifsComErro ??
+            metrics.cifsComErro ??
+            metrics.CifsComErro ??
+            0,
+
+        ficheirosNaFila:
+            payload.ficheirosNaFila ??
+            payload.FicheirosNaFila ??
+            metrics.ficheirosNaFila ??
+            metrics.FicheirosNaFila ??
+            0,
+
+        ficheirosAvaliados:
+            payload.ficheirosAvaliados ??
+            payload.FicheirosAvaliados ??
+            metrics.ficheirosAvaliados ??
+            metrics.FicheirosAvaliados ??
+            0,
+
+        ficheirosFtp550:
+            payload.ficheirosFtp550 ??
+            payload.FicheirosFtp550 ??
+            metrics.ficheirosFtp550 ??
+            metrics.FicheirosFtp550 ??
+            0,
+
+        requestsGemini:
+            payload.requestsGemini ??
+            payload.RequestsGemini ??
+            metrics.requestsGemini ??
+            metrics.RequestsGemini ??
+            0,
+
+        timeoutsAgente:
+            payload.timeoutsAgente ??
+            payload.TimeoutsAgente ??
+            metrics.timeoutsAgente ??
+            metrics.TimeoutsAgente ??
+            0,
+
+        errosApi:
+            payload.errosApi ??
+            payload.ErrosApi ??
+            metrics.errosApi ??
+            metrics.ErrosApi ??
+            0,
+
+        progressoPercentual:
+            payload.progressoPercentual ??
+            payload.ProgressoPercentual ??
+            metrics.progressoPercentual ??
+            metrics.ProgressoPercentual ??
+            0,
+
+        sucessoPercentual:
+            payload.sucessoPercentual ??
+            payload.SucessoPercentual ??
+            metrics.sucessoPercentual ??
+            metrics.SucessoPercentual ??
+            0,
+
+        ultimoEvento:
+            payload.ultimoEvento ??
+            payload.UltimoEvento ??
+            payload.status ??
+            payload.Status ??
+            null,
+
+        categoriaUltimoErro:
+            payload.categoriaUltimoErro ??
+            payload.CategoriaUltimoErro ??
+            payload.lastErrorCategory ??
+            payload.LastErrorCategory ??
+            null,
+
+        dataHoraOrigem:
+            payload.dataHoraOrigem ??
+            payload.DataHoraOrigem ??
+            payload.sentAt ??
+            payload.SentAt ??
+            null,
+
+        recentLogs
+    };
+
+    return telemetry;
 }
-
 loadHistoryFromDisk();
 
 const server = http.createServer(async (req, res) => {

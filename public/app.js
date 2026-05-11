@@ -55,7 +55,32 @@ function updateDashboard(data) {
   updateCard('ficheirosFtp550', latest.ficheirosFtp550);
   updateCard('requestsGemini', latest.requestsGemini);
   updateCard('timeoutsAgente', latest.timeoutsAgente);
-  updateCard('errosApi', latest.errosApi);
+    updateCard('errosApi', latest.errosApi);
+
+    const logsBox = $('logsBox');
+    if (logsBox) {
+        const logs = latest.recentLogs || [];
+
+        if (!logs.length) {
+            logsBox.textContent = 'Sem logs ainda.';
+        } else {
+            logsBox.textContent = logs.map(log => {
+                if (typeof log === 'string') return log;
+
+                const timestamp = log.timestamp
+                    ? new Date(log.timestamp).toLocaleString('pt-PT')
+                    : '-';
+
+                const level = log.level || '-';
+                const message = log.message || '';
+                const exception = log.exception ? `\n${log.exception}` : '';
+
+                return `[${timestamp}] [${level}] ${message}${exception}`;
+            }).join('\n');
+        }
+
+        logsBox.scrollTop = logsBox.scrollHeight;
+    }
 }
 
 function updateHistory(items) {
