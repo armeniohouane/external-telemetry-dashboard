@@ -7,6 +7,7 @@ const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT || 8080);
 const TELEMETRY_KEY = process.env.TELEMETRY_KEY || process.env.DASHBOARD_SHARED_SECRET || '';
+const LIVE_CONTROL_PASSWORD = process.env.LIVE_CONTROL_PASSWORD || 'Zeus';
 const REQUIRE_COMMAND_SECRET = String(process.env.REQUIRE_COMMAND_SECRET || 'false').toLowerCase() === 'true';
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 1024 * 1024);
 const MAX_HISTORY = Number(process.env.MAX_HISTORY || process.env.MAX_HISTORY_ITEMS || 500);
@@ -150,6 +151,18 @@ function isAuthorized(req) {
     headers['authorization'] ? String(headers['authorization']).replace(/^Bearer\s+/i, '') : ''
   ];
   return candidates.some(value => timingSafeEqualText(value, TELEMETRY_KEY));
+}
+
+function isControlAuthorized(req, payload = {}) {
+  const headers = req.headers || {};
+  const candidates = [
+    payload.controlPassword,
+    payload.password,
+    payload.liveControlPassword,
+    headers['x-control-password'],
+    headers['x-live-control-password']
+  ];
+  return candidates.some(value => timingSafeEqualText(value, LIVE_CONTROL_PASSWORD));
 }
 
 function pick(obj, ...keys) {
@@ -328,6 +341,9 @@ function validateTelemetry(payload) {
 
 function createCommand(payload) {
   const now = new Date().toISOString();
+  const parameters = payload.parameters && typeof payload.parameters === 'object' ? { ...payload.parameters } : {};
+  delete parameters.controlPassword;
+  delete parameters.password;
   return {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     createdAt: now,
@@ -338,9 +354,20 @@ function createCommand(payload) {
     runtime: normalizeRuntime(pick(payload, 'runtime', 'Runtime')),
     runtimeApplyMode: safePublicText(pick(payload, 'runtimeApplyMode', 'RuntimeApplyMode'), null),
     worker: safePublicText(pick(payload, 'worker', 'Worker'), null),
-    parameters: payload.parameters && typeof payload.parameters === 'object' ? payload.parameters : {}
+    parameters
   };
 }
+
+function acknowledgeCommand(commandId, payload = {}) {
+  const item = (store.commands || []).find(command => command.id === commandId);
+  if (!item) return null;
+  item.status = safePublicText(pick(payload, 'status', 'Status'), 'Processado');
+  item.result = safePublicText(pick(payload, 'result', 'Result', 'message', 'Message'), null);
+  item.processedBy = safePublicText(pick(payload, 'processedBy', 'ProcessedBy'), 'RPA');
+  item.processedAt = new Date().toISOString();
+  return item;
+}
+
 
 function addLog(level, message, extra = {}) {
   const item = { timestamp: new Date().toISOString(), level, message, ...extra };
@@ -446,13 +473,26 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && pathname === '/api/commands') {
-    if (REQUIRE_COMMAND_SECRET && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized command write.' });
     return handlePostJson(req, res, (parsed) => {
+      if (REQUIRE_COMMAND_SECRET && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized command write.' });
+      if (!isControlAuthorized(req, parsed)) return sendJson(res, 403, { ok: false, error: 'Invalid live control password.' });
       const item = createCommand(parsed || {});
       store.commands.push(item);
       addLog('INF', `Comando registado | ${item.command}`);
       persistStore();
       return sendJson(res, 202, item);
+    });
+  }
+
+  if (req.method === 'POST' && pathname.startsWith('/api/commands/') && pathname.endsWith('/ack')) {
+    if (!isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized command ack.' });
+    const commandId = decodeURIComponent(pathname.split('/')[3] || '');
+    return handlePostJson(req, res, (parsed) => {
+      const item = acknowledgeCommand(commandId, parsed || {});
+      if (!item) return sendJson(res, 404, { ok: false, error: 'Command not found.' });
+      addLog('INF', `Comando actualizado | ${item.command} | ${item.status}`);
+      persistStore();
+      return sendJson(res, 200, { ok: true, command: item });
     });
   }
 
