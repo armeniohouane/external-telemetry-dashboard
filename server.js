@@ -3,27 +3,25 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT || 8080);
-const TELEMETRY_KEY = process.env.TELEMETRY_KEY || process.env.DASHBOARD_SHARED_SECRET || '';
-const LIVE_CONTROL_PASSWORD = process.env.LIVE_CONTROL_PASSWORD || 'Zeus';
-const REQUIRE_COMMAND_SECRET = String(process.env.REQUIRE_COMMAND_SECRET || 'false').toLowerCase() === 'true';
-const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 1024 * 1024);
-const MAX_HISTORY = Number(process.env.MAX_HISTORY || process.env.MAX_HISTORY_ITEMS || 500);
+const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'telemetry-store.json');
-const LEGACY_HISTORY_FILE = path.join(DATA_DIR, 'telemetry.jsonl');
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 25 * 1024 * 1024);
+const MAX_HISTORY = Number(process.env.MAX_HISTORY || process.env.MAX_HISTORY_ITEMS || 1000);
 
-if (!TELEMETRY_KEY || TELEMETRY_KEY.length < 16) {
-  console.warn('[WARN] TELEMETRY_KEY/DASHBOARD_SHARED_SECRET não definido ou curto. Em Render público, configure uma chave forte.');
-}
+// Urgente: por defeito a telemetria NAO bloqueia por chave. Se quiser voltar a exigir chave,
+// defina REQUIRE_TELEMETRY_KEY=true no Render.
+const REQUIRE_TELEMETRY_KEY = String(process.env.REQUIRE_TELEMETRY_KEY || 'false').toLowerCase() === 'true';
+const TELEMETRY_KEY = process.env.TELEMETRY_KEY || process.env.DASHBOARD_SHARED_SECRET || process.env.API_KEY || '';
+const LIVE_CONTROL_PASSWORD = process.env.LIVE_CONTROL_PASSWORD || 'Zeus';
+const REQUIRE_COMMAND_SECRET = String(process.env.REQUIRE_COMMAND_SECRET || 'false').toLowerCase() === 'true';
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 let store = loadStore();
-let eventClients = new Set();
+const eventClients = new Set();
 
 function defaultStore() {
   return { latest: null, history: [], commands: [], logs: [] };
@@ -31,69 +29,52 @@ function defaultStore() {
 
 function loadStore() {
   try {
-    if (fs.existsSync(STORE_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
-      return {
-        latest: parsed.latest || null,
-        history: Array.isArray(parsed.history) ? parsed.history.slice(-MAX_HISTORY) : [],
-        commands: Array.isArray(parsed.commands) ? parsed.commands.slice(-250) : [],
-        logs: Array.isArray(parsed.logs) ? parsed.logs.slice(-300) : []
-      };
-    }
-
-    if (fs.existsSync(LEGACY_HISTORY_FILE)) {
-      const lines = fs.readFileSync(LEGACY_HISTORY_FILE, 'utf8').split(/\r?\n/).filter(Boolean).slice(-MAX_HISTORY);
-      const history = lines.map(x => safeJsonParse(x)).filter(Boolean);
-      return { latest: history[history.length - 1] || null, history, commands: [], logs: [] };
-    }
+    if (!fs.existsSync(STORE_FILE)) return defaultStore();
+    const parsed = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
+    return {
+      latest: parsed.latest || null,
+      history: Array.isArray(parsed.history) ? parsed.history.slice(-MAX_HISTORY) : [],
+      commands: Array.isArray(parsed.commands) ? parsed.commands.slice(-500) : [],
+      logs: Array.isArray(parsed.logs) ? parsed.logs.slice(-500) : []
+    };
   } catch (error) {
-    console.warn('[WARN] Falha ao carregar dados persistidos:', error.message);
+    console.warn('[WRN] Falha ao carregar store:', error.message);
+    return defaultStore();
   }
-  return defaultStore();
 }
 
 function persistStore() {
   try {
-    trimStore();
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+    store.history = (store.history || []).slice(-MAX_HISTORY);
+    store.commands = (store.commands || []).slice(-500);
+    store.logs = (store.logs || []).slice(-500);
     fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2));
   } catch (error) {
-    console.warn('[WARN] Falha ao persistir dados:', error.message);
+    console.warn('[WRN] Falha ao persistir store:', error.message);
   }
 }
 
-function trimStore() {
-  store.history = (store.history || []).slice(-MAX_HISTORY);
-  store.commands = (store.commands || []).slice(-250);
-  store.logs = (store.logs || []).slice(-300);
-}
-
-function safeJsonParse(value) {
-  try { return JSON.parse(value); } catch { return null; }
+function normalizePathname(value) {
+  const clean = String(value || '/').replace(/\/+/g, '/');
+  if (clean === '/') return '/';
+  return clean.replace(/\/$/, '') || '/';
 }
 
 function sendJson(res, statusCode, payload) {
-  const body = JSON.stringify(payload, null, 2);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Telemetry-Key,X-Dashboard-Secret,X-Control-Password,X-Live-Control-Password',
     'X-Content-Type-Options': 'nosniff'
   });
-  res.end(body);
-}
-
-function sendText(res, statusCode, text, contentType = 'text/plain; charset=utf-8') {
-  res.writeHead(statusCode, {
-    'Content-Type': contentType,
-    'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff'
-  });
-  res.end(text);
+  res.end(JSON.stringify(payload, null, 2));
 }
 
 function sendFile(res, filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  const contentTypes = {
+  const types = {
     '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
@@ -104,11 +85,10 @@ function sendFile(res, filePath) {
     '.jpeg': 'image/jpeg',
     '.ico': 'image/x-icon'
   };
-
   fs.readFile(filePath, (err, data) => {
     if (err) return sendJson(res, 404, { ok: false, error: 'Not found' });
     res.writeHead(200, {
-      'Content-Type': contentTypes[ext] || 'application/octet-stream',
+      'Content-Type': types[ext] || 'application/octet-stream',
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff'
     });
@@ -116,14 +96,14 @@ function sendFile(res, filePath) {
   });
 }
 
-function readRequestBody(req) {
+function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', chunk => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error('Payload demasiado grande'));
+        reject(new Error(`Payload demasiado grande. Limite actual: ${MAX_BODY_BYTES} bytes.`));
         req.destroy();
         return;
       }
@@ -134,35 +114,19 @@ function readRequestBody(req) {
   });
 }
 
-function timingSafeEqualText(a, b) {
-  if (!a || !b) return false;
-  const aBuf = Buffer.from(String(a));
-  const bBuf = Buffer.from(String(b));
-  if (aBuf.length !== bBuf.length) return false;
-  return crypto.timingSafeEqual(aBuf, bBuf);
+function safeParseJson(text) {
+  try { return JSON.parse(text || '{}'); }
+  catch { return { rawBody: String(text || ''), parseWarning: 'JSON inválido recebido; guardado como texto bruto.' }; }
 }
 
-function isAuthorized(req) {
-  if (!TELEMETRY_KEY) return true;
-  const headers = req.headers || {};
-  const candidates = [
-    headers['x-telemetry-key'],
-    headers['x-dashboard-secret'],
-    headers['authorization'] ? String(headers['authorization']).replace(/^Bearer\s+/i, '') : ''
-  ];
-  return candidates.some(value => timingSafeEqualText(value, TELEMETRY_KEY));
+function text(value, fallback = null) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return String(value);
 }
 
-function isControlAuthorized(req, payload = {}) {
-  const headers = req.headers || {};
-  const candidates = [
-    payload.controlPassword,
-    payload.password,
-    payload.liveControlPassword,
-    headers['x-control-password'],
-    headers['x-live-control-password']
-  ];
-  return candidates.some(value => timingSafeEqualText(value, LIVE_CONTROL_PASSWORD));
+function number(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function pick(obj, ...keys) {
@@ -172,11 +136,6 @@ function pick(obj, ...keys) {
   return undefined;
 }
 
-function number(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
 function percent(part, total) {
   const p = number(part);
   const t = number(total);
@@ -184,69 +143,62 @@ function percent(part, total) {
 }
 
 function normalizeRuntime(value) {
-  const text = String(value || 'web').toLowerCase();
-  if (text.includes('api')) return 'api';
-  if (text.includes('auto')) return 'auto';
+  const raw = String(value || 'web').toLowerCase();
+  if (raw.includes('api')) return 'api';
+  if (raw.includes('auto')) return 'auto';
   return 'web';
 }
 
-function safePublicText(value, fallback = null) {
-  if (value === undefined || value === null || value === '') return fallback;
-  return String(value).slice(0, 160);
+function mergeSources(payload) {
+  const metrics = payload && typeof payload.metrics === 'object' ? payload.metrics : {};
+  const Metrics = payload && typeof payload.Metrics === 'object' ? payload.Metrics : {};
+  const data = payload && typeof payload.data === 'object' ? payload.data : {};
+  const Data = payload && typeof payload.Data === 'object' ? payload.Data : {};
+  const snapshot = payload && typeof payload.snapshot === 'object' ? payload.snapshot : {};
+  const Snapshot = payload && typeof payload.Snapshot === 'object' ? payload.Snapshot : {};
+  return { ...metrics, ...Metrics, ...data, ...Data, ...snapshot, ...Snapshot, ...(payload || {}) };
 }
 
-function sanitizeErrorTypes(value) {
+function objectNumberMap(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const result = {};
-  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  for (const [key, raw] of Object.entries(source)) {
-    const cleanKey = safePublicText(key, 'Erro Geral');
-    result[cleanKey] = number(raw);
-  }
+  for (const [key, raw] of Object.entries(value)) result[key] = number(raw);
   return result;
 }
 
-function sanitizeWorkers(value) {
+function normalizeWorkers(value) {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, 50).map((worker, index) => ({
-    id: safePublicText(pick(worker, 'id', 'Id', 'workerId', 'WorkerId'), `Worker-${String(index + 1).padStart(2, '0')}`),
-    estado: safePublicText(pick(worker, 'estado', 'Estado', 'status', 'Status'), 'Desconhecido'),
-    processando: safePublicText(pick(worker, 'campoAtual', 'CampoAtual', 'currentField', 'CurrentField', 'processando', 'Processando'), 'Sanitizado'),
+  return value.map((worker, index) => ({
+    id: text(pick(worker, 'id', 'Id', 'workerId', 'WorkerId'), `Worker-${index + 1}`),
+    estado: text(pick(worker, 'estado', 'Estado', 'status', 'Status'), 'Desconhecido'),
+    processando: text(pick(worker, 'processando', 'Processando', 'campoAtual', 'CampoAtual', 'campoActual', 'CampoActual', 'currentField', 'CurrentField'), '--'),
     filaLocal: number(pick(worker, 'filaLocal', 'FilaLocal', 'localQueue', 'LocalQueue')),
-    modelo: safePublicText(pick(worker, 'modelo', 'Modelo', 'model', 'Model'), null),
-    ultimoHeartbeat: pick(worker, 'ultimoHeartbeat', 'UltimoHeartbeat', 'heartbeat', 'Heartbeat') || null
+    modelo: text(pick(worker, 'modelo', 'Modelo', 'model', 'Model'), null),
+    ultimoHeartbeat: pick(worker, 'ultimoHeartbeat', 'UltimoHeartbeat', 'heartbeat', 'Heartbeat') || null,
+    raw: worker
   }));
 }
 
-function sanitizeTimeline(value, data) {
-  if (Array.isArray(value) && value.length) {
-    return value.slice(-80).map((x, index) => ({
-      label: safePublicText(pick(x, 'label', 'Label'), String(index + 1)),
-      timestamp: pick(x, 'timestamp', 'Timestamp') || null,
-      processed: number(pick(x, 'processed', 'Processados', 'cifsProcessados', 'CifsProcessados')),
-      success: number(pick(x, 'success', 'Sucesso', 'cifsSucesso', 'CifsSucesso')),
-      notFound: number(pick(x, 'notFound', 'NaoEncontrado', 'cifsNaoEncontrado', 'CifsNaoEncontrado')),
-      errors: number(pick(x, 'errors', 'Erros', 'cifsComErro', 'CifsComErro')),
-      progress: number(pick(x, 'progress', 'Progresso', 'progressoPercentual', 'ProgressoPercentual'))
-    }));
-  }
-
-  const now = new Date();
+function normalizeTimeline(value, source) {
+  if (Array.isArray(value) && value.length) return value;
+  const now = new Date().toISOString();
   return [{
-    label: now.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }),
-    timestamp: now.toISOString(),
-    processed: number(pick(data, 'cifsProcessados', 'CifsProcessados', 'CIFsProcessados')),
-    success: number(pick(data, 'cifsSucesso', 'CifsSucesso', 'CIFsSucesso')),
-    notFound: number(pick(data, 'cifsNaoEncontrado', 'CifsNaoEncontrado', 'CIFsNaoEncontrado')),
-    errors: number(pick(data, 'cifsComErro', 'CifsComErro', 'CIFsComErro')),
-    progress: percent(pick(data, 'cifsProcessados', 'CifsProcessados', 'CIFsProcessados'), pick(data, 'cifsRecebidos', 'CifsRecebidos', 'CIFsRecebidos'))
+    label: new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }),
+    timestamp: now,
+    processed: number(pick(source, 'cifsProcessados', 'CifsProcessados', 'CIFsProcessados', 'CIFs_Processados')),
+    success: number(pick(source, 'cifsSucesso', 'CifsSucesso', 'CIFsSucesso', 'CIFs_Sucesso')),
+    notFound: number(pick(source, 'cifsNaoEncontrado', 'CifsNaoEncontrado', 'CIFsNaoEncontrado', 'CIFs_Nao_Encontrado')),
+    errors: number(pick(source, 'cifsComErro', 'CifsComErro', 'CIFsComErro', 'CIFs_Com_Erro')),
+    progress: percent(
+      pick(source, 'cifsProcessados', 'CifsProcessados', 'CIFsProcessados', 'CIFs_Processados'),
+      pick(source, 'cifsRecebidos', 'CifsRecebidos', 'CIFsRecebidos', 'CIFs_Recebidos')
+    )
   }];
 }
 
-function normalizeTelemetry(payload) {
+function normalizeTelemetry(payload, req) {
   const now = new Date().toISOString();
-  const metrics = payload.metrics || payload.Metrics || {};
-  const data = payload.data || payload.Data || payload;
-  const source = { ...metrics, ...data };
+  const source = mergeSources(payload && typeof payload === 'object' ? payload : {});
 
   const cifsRecebidos = number(pick(source, 'cifsRecebidos', 'CifsRecebidos', 'CIFsRecebidos', 'CIFs_Recebidos'));
   const cifsProcessados = number(pick(source, 'cifsProcessados', 'CifsProcessados', 'CIFsProcessados', 'CIFs_Processados'));
@@ -254,23 +206,28 @@ function normalizeTelemetry(payload) {
   const cifsNaoEncontrado = number(pick(source, 'cifsNaoEncontrado', 'CifsNaoEncontrado', 'CIFsNaoEncontrado', 'CIFs_Nao_Encontrado'));
   const cifsInvalidos = number(pick(source, 'cifsInvalidos', 'CifsInvalidos', 'CIFsInvalidos', 'CIFs_Invalidos'));
   const cifsComErro = number(pick(source, 'cifsComErro', 'CifsComErro', 'CIFsComErro', 'CIFs_Com_Erro'));
-  const ficheirosRecebidos = number(pick(source, 'ficheirosRecebidos', 'FicheirosRecebidos', 'Ficheiros_Recebidos', 'ficheirosNaFila', 'FicheirosNaFila', 'Uploads'));
   const ficheirosAvaliados = number(pick(source, 'ficheirosAvaliados', 'FicheirosAvaliados', 'Ficheiros_Avaliados'));
-  const ficheirosFtp550 = number(pick(source, 'ficheirosFtp550', 'FicheirosFtp550', 'Ficheiros_FTP_550'));
-  const uploads = number(pick(source, 'uploads', 'Uploads', 'Uploads_Direct_Line', 'requestsGemini', 'RequestsGemini'));
-  const errosDirectLine = number(pick(source, 'errosDirectLine', 'ErrosDirectLine', 'Erros_Direct_Line', 'errosApi', 'ErrosApi'));
-  const normalizacoesSolicitadas = number(pick(source, 'normalizacoesSolicitadas', 'NormalizacoesSolicitadas', 'Normalizacoes_Solicitadas'));
-  const normalizacoesComSucesso = number(pick(source, 'normalizacoesComSucesso', 'NormalizacoesComSucesso', 'Normalizacoes_Com_Sucesso'));
+  const ficheirosRecebidos = number(pick(source, 'ficheirosRecebidos', 'FicheirosRecebidos', 'Ficheiros_Recebidos'), ficheirosAvaliados);
 
   const item = {
     receivedAt: now,
-    instanceName: safePublicText(pick(source, 'instanceName', 'InstanceName'), 'Render'),
-    idExecucao: safePublicText(pick(source, 'idExecucao', 'IdExecucao', 'Id_Execucao', 'currentExecutionId', 'CurrentExecutionId'), now.replace(/[-:TZ.]/g, '').slice(0, 14)),
+    acceptedWithoutTelemetryAuth: !REQUIRE_TELEMETRY_KEY,
+    receivedHeaders: {
+      userAgent: req.headers['user-agent'] || null,
+      contentType: req.headers['content-type'] || null,
+      contentLength: req.headers['content-length'] || null,
+      xTelemetryKeyPresent: Boolean(req.headers['x-telemetry-key']),
+      xDashboardSecretPresent: Boolean(req.headers['x-dashboard-secret']),
+      authorizationPresent: Boolean(req.headers.authorization)
+    },
+
+    instanceName: text(pick(source, 'instanceName', 'InstanceName'), 'RPA Clientes Irregulares'),
+    idExecucao: text(pick(source, 'idExecucao', 'IdExecucao', 'Id_Execucao', 'currentExecutionId', 'CurrentExecutionId'), now.replace(/[-:TZ.]/g, '').slice(0, 14)),
     data: pick(source, 'data', 'Data', 'dataHoraOrigem', 'DataHoraOrigem', 'sentAt', 'SentAt') || now,
-    estadoFinal: safePublicText(pick(source, 'estadoFinal', 'EstadoFinal', 'Estado_Final', 'estadoAtual', 'EstadoAtual', 'estado', 'Estado', 'status', 'Status'), 'Recebido'),
-    runtimeActual: normalizeRuntime(pick(source, 'runtimeActual', 'RuntimeActual', 'Runtime_Actual', 'runtime')),
-    runtimeSolicitado: normalizeRuntime(pick(source, 'runtimeSolicitado', 'RuntimeSolicitado', 'Runtime_Solicitado', 'runtime')),
-    runtimeModo: safePublicText(pick(source, 'runtimeModo', 'RuntimeModo'), null),
+    estadoFinal: text(pick(source, 'estadoFinal', 'EstadoFinal', 'Estado_Final', 'estadoAtual', 'EstadoAtual', 'estado', 'Estado', 'status', 'Status'), 'Recebido'),
+    runtimeActual: normalizeRuntime(pick(source, 'runtimeActual', 'RuntimeActual', 'Runtime_Actual', 'runtime', 'Runtime')),
+    runtimeSolicitado: normalizeRuntime(pick(source, 'runtimeSolicitado', 'RuntimeSolicitado', 'Runtime_Solicitado', 'runtime', 'Runtime')),
+    runtimeModo: text(pick(source, 'runtimeModo', 'RuntimeModo', 'modo', 'Modo'), null),
 
     cifsRecebidos,
     cifsProcessados,
@@ -280,30 +237,40 @@ function normalizeTelemetry(payload) {
     cifsComErro,
     ficheirosRecebidos,
     ficheirosAvaliados,
-    ficheirosFtp550,
-    uploads,
+    ficheirosFtp550: number(pick(source, 'ficheirosFtp550', 'FicheirosFtp550', 'Ficheiros_FTP_550')),
+    uploads: number(pick(source, 'uploads', 'Uploads', 'Uploads_Direct_Line', 'requestsGemini', 'RequestsGemini')),
     timeoutsAgente: number(pick(source, 'timeoutsAgente', 'TimeoutsAgente', 'Timeouts_Agente')),
-    errosDirectLine,
-    normalizacoesSolicitadas,
-    normalizacoesComSucesso,
-    tempoMedioPorCif: number(pick(source, 'tempoMedioPorCif', 'TempoMedioPorCif', 'Tempo_Medio_Por_CIF')),
+    errosDirectLine: number(pick(source, 'errosDirectLine', 'ErrosDirectLine', 'Erros_Direct_Line', 'errosApi', 'ErrosApi')),
+    normalizacoesSolicitadas: number(pick(source, 'normalizacoesSolicitadas', 'NormalizacoesSolicitadas', 'Normalizacoes_Solicitadas')),
+    normalizacoesComSucesso: number(pick(source, 'normalizacoesComSucesso', 'NormalizacoesComSucesso', 'Normalizacoes_Com_Sucesso')),
+    tempoMedioPorCif: number(pick(source, 'tempoMedioPorCif', 'TempoMedioPorCif', 'tempoMedioPorCIF', 'TempoMedioPorCIF', 'Tempo_Medio_Por_CIF')),
     tempoMedioRespostaAgente: number(pick(source, 'tempoMedioRespostaAgente', 'TempoMedioRespostaAgente', 'Tempo_Medio_Resposta_Agente')),
-    tempoBackoffTotalMinutos: number(pick(source, 'tempoBackoffTotalMinutos', 'TempoBackoffTotalMinutos', 'Tempo_Backoff_Total_Minutos')),
+    tempoBackoffTotalMinutos: number(pick(source, 'tempoBackoffTotalMinutos', 'TempoBackoffTotalMinutos', 'backoffGlobalMinutos', 'BackoffGlobalMinutos')),
 
-    modeloActual: safePublicText(pick(source, 'modeloActual', 'ModeloActual', 'modelo', 'Modelo'), null),
-    modeloSeleccionado: safePublicText(pick(source, 'modeloSeleccionado', 'ModeloSeleccionado'), null),
+    modeloActual: text(pick(source, 'modeloActual', 'ModeloActual', 'modeloAlvo', 'ModeloAlvo', 'modelo', 'Modelo'), null),
+    modeloSeleccionado: text(pick(source, 'modeloSeleccionado', 'ModeloSeleccionado', 'modeloSelecionado', 'ModeloSelecionado'), null),
     fallbackCount: number(pick(source, 'fallbackCount', 'FallbackCount', 'fallbacks', 'Fallbacks')),
-    errosGlobaisConsecutivos: number(pick(source, 'errosGlobaisConsecutivos', 'ErrosGlobaisConsecutivos')),
-    ultimaRequisicao: pick(source, 'ultimaRequisicao', 'UltimaRequisicao') || null,
+    errosGlobaisConsecutivos: number(pick(source, 'errosGlobaisConsecutivos', 'ErrosGlobaisConsecutivos', 'errosConsecutivosGlobais', 'ErrosConsecutivosGlobais')),
+    limiteErrosGlobais: number(pick(source, 'limiteErrosGlobais', 'LimiteErrosGlobais')),
+    intervaloMinimoEntreRequisicoesSegundos: number(pick(source, 'intervaloMinimoEntreRequisicoesSegundos', 'IntervaloMinimoEntreRequisicoesSegundos')),
+    ultimaRequisicao: pick(source, 'ultimaRequisicao', 'UltimaRequisicao', 'ultimaRequisicaoAgente', 'UltimaRequisicaoAgente') || null,
     proximaRequisicaoPermitida: pick(source, 'proximaRequisicaoPermitida', 'ProximaRequisicaoPermitida') || null,
     heartbeat: pick(source, 'heartbeat', 'Heartbeat', 'ultimoHeartbeat', 'UltimoHeartbeat') || now,
-    ultimoEvento: safePublicText(pick(source, 'ultimoEvento', 'UltimoEvento'), null),
-    categoriaUltimoErro: safePublicText(pick(source, 'categoriaUltimoErro', 'CategoriaUltimoErro', 'lastErrorCategory', 'LastErrorCategory'), null),
+    ultimoEvento: text(pick(source, 'ultimoEvento', 'UltimoEvento'), null),
+    categoriaUltimoErro: text(pick(source, 'categoriaUltimoErro', 'CategoriaUltimoErro', 'lastErrorCategory', 'LastErrorCategory'), null),
+    ultimoErro: text(pick(source, 'ultimoErro', 'UltimoErro', 'lastError', 'LastError'), null),
 
-    // Campos sensíveis não são propagados no dashboard externo.
-    cifActual: null,
-    ficheiroActual: null,
-    campoActual: safePublicText(pick(source, 'campoActual', 'campoAtual', 'CampoActual', 'CampoAtual', 'currentField', 'CurrentField'), null),
+    // Agora propagado sem sanitizar para depuração operacional urgente.
+    cifActual: text(pick(source, 'cifActual', 'cifAtual', 'CIFAtual', 'CIF_Atual'), null),
+    ficheiroActual: text(pick(source, 'ficheiroActual', 'ficheiroAtual', 'FicheiroAtual', 'Ficheiro_Atual'), null),
+    campoActual: text(pick(source, 'campoActual', 'campoAtual', 'CampoActual', 'CampoAtual', 'currentField', 'CurrentField'), null),
+
+    pausado: Boolean(pick(source, 'pausado', 'Pausado', 'pausaSolicitada', 'PausaSolicitada')),
+    paragemSeguraSolicitada: Boolean(pick(source, 'paragemSeguraSolicitada', 'ParagemSeguraSolicitada')),
+    ultimoComandoLiveControl: text(pick(source, 'ultimoComandoLiveControl', 'UltimoComandoLiveControl'), null),
+    alteradoPorLiveControl: text(pick(source, 'alteradoPorLiveControl', 'AlteradoPorLiveControl'), null),
+    motivoUltimoComando: text(pick(source, 'motivoUltimoComando', 'MotivoUltimoComando'), null),
+    dataUltimoComandoLiveControl: pick(source, 'dataUltimoComandoLiveControl', 'DataUltimoComandoLiveControl') || null,
 
     apiWorkersActivos: number(pick(source, 'apiWorkersActivos', 'ApiWorkersActivos', 'Api_Workers_Activos', 'workersActive')),
     apiWorkersTotal: number(pick(source, 'apiWorkersTotal', 'ApiWorkersTotal', 'Api_Workers_Total', 'workersTotal')),
@@ -323,77 +290,90 @@ function normalizeTelemetry(payload) {
     apiCustoEstimadoUsd: number(pick(source, 'apiCustoEstimadoUsd', 'ApiCustoEstimadoUsd', 'estimatedCostUsd')),
     apiQuotaRestantePercent: number(pick(source, 'apiQuotaRestantePercent', 'ApiQuotaRestantePercent', 'quotaRemainingPercent')),
 
-    timeline: sanitizeTimeline(pick(source, 'timeline', 'Timeline'), source),
-    errosPorTipo: sanitizeErrorTypes(pick(source, 'errosPorTipo', 'ErrosPorTipo', 'errorsByType', 'ErrorsByType')),
-    workers: sanitizeWorkers(pick(source, 'workers', 'Workers'))
+    timeline: normalizeTimeline(pick(source, 'timeline', 'Timeline'), source),
+    errosPorTipo: objectNumberMap(pick(source, 'errosPorTipo', 'ErrosPorTipo', 'errorsByType', 'ErrorsByType')),
+    workers: normalizeWorkers(pick(source, 'workers', 'Workers')),
+
+    rawPayload: payload,
+    rawPayloadPreview: JSON.stringify(payload).slice(0, 12000),
+    rawKeys: Object.keys(payload || {})
   };
 
   item.progressoPercentual = number(pick(source, 'progressoPercentual', 'ProgressoPercentual'), percent(cifsProcessados, cifsRecebidos));
   item.sucessoPercentual = number(pick(source, 'sucessoPercentual', 'SucessoPercentual'), percent(cifsSucesso, cifsProcessados));
-
   return item;
 }
 
-function validateTelemetry(payload) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'Payload deve ser um objecto JSON.';
-  return null;
+function isAuthorized(req) {
+  if (!TELEMETRY_KEY) return !REQUIRE_TELEMETRY_KEY;
+  const auth = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  return [req.headers['x-telemetry-key'], req.headers['x-dashboard-secret'], auth].some(v => String(v || '') === TELEMETRY_KEY);
 }
 
-function createCommand(payload) {
-  const now = new Date().toISOString();
-  const parameters = payload.parameters && typeof payload.parameters === 'object' ? { ...payload.parameters } : {};
-  delete parameters.controlPassword;
-  delete parameters.password;
-  return {
-    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
-    createdAt: now,
-    command: safePublicText(pick(payload, 'command', 'tipo', 'Tipo'), 'Unknown'),
-    status: 'Pendente',
-    requestedBy: safePublicText(pick(payload, 'requestedBy', 'solicitadoPor'), 'Dashboard'),
-    reason: safePublicText(pick(payload, 'reason', 'motivo'), ''),
-    runtime: normalizeRuntime(pick(payload, 'runtime', 'Runtime')),
-    runtimeApplyMode: safePublicText(pick(payload, 'runtimeApplyMode', 'RuntimeApplyMode'), null),
-    worker: safePublicText(pick(payload, 'worker', 'Worker'), null),
-    parameters
-  };
+function isControlAuthorized(req, payload = {}) {
+  return [
+    payload.controlPassword,
+    payload.password,
+    payload.liveControlPassword,
+    req.headers['x-control-password'],
+    req.headers['x-live-control-password']
+  ].some(v => String(v || '') === LIVE_CONTROL_PASSWORD);
 }
-
-function acknowledgeCommand(commandId, payload = {}) {
-  const item = (store.commands || []).find(command => command.id === commandId);
-  if (!item) return null;
-  item.status = safePublicText(pick(payload, 'status', 'Status'), 'Processado');
-  item.result = safePublicText(pick(payload, 'result', 'Result', 'message', 'Message'), null);
-  item.processedBy = safePublicText(pick(payload, 'processedBy', 'ProcessedBy'), 'RPA');
-  item.processedAt = new Date().toISOString();
-  return item;
-}
-
 
 function addLog(level, message, extra = {}) {
   const item = { timestamp: new Date().toISOString(), level, message, ...extra };
   store.logs.push(item);
-  store.logs = store.logs.slice(-300);
-  broadcastEvent(item);
+  store.logs = store.logs.slice(-500);
+  broadcast(item);
 }
 
-function broadcastEvent(item) {
-  const payload = `data: ${JSON.stringify(item)}\n\n`;
+function broadcast(item) {
+  const data = `data: ${JSON.stringify(item)}\n\n`;
   for (const res of eventClients) {
-    try { res.write(payload); } catch { eventClients.delete(res); }
+    try { res.write(data); } catch { eventClients.delete(res); }
   }
 }
 
-async function handlePostJson(req, res, handler) {
-  let body;
-  try { body = await readRequestBody(req); }
+async function handleJson(req, res, handler) {
+  let raw;
+  try { raw = await readBody(req); }
   catch (error) { return sendJson(res, 413, { ok: false, error: error.message }); }
-
-  const parsed = safeJsonParse(body || '{}');
-  if (!parsed) return sendJson(res, 400, { ok: false, error: 'JSON inválido.' });
-  return handler(parsed);
+  const parsed = safeParseJson(raw);
+  return handler(parsed, raw);
 }
 
-function serveStatic(req, res, pathname) {
+function createCommand(payload) {
+  const parameters = payload.parameters && typeof payload.parameters === 'object' ? { ...payload.parameters } : {};
+  delete parameters.password;
+  delete parameters.controlPassword;
+  delete parameters.liveControlPassword;
+  return {
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    createdAt: new Date().toISOString(),
+    command: text(pick(payload, 'command', 'tipo', 'Tipo'), 'Unknown'),
+    status: 'Pendente',
+    requestedBy: text(pick(payload, 'requestedBy', 'solicitadoPor'), 'Dashboard'),
+    reason: text(pick(payload, 'reason', 'motivo'), ''),
+    runtime: normalizeRuntime(pick(payload, 'runtime', 'Runtime')),
+    runtimeApplyMode: text(pick(payload, 'runtimeApplyMode', 'RuntimeApplyMode'), null),
+    worker: text(pick(payload, 'worker', 'Worker'), null),
+    parameters,
+    rawPayload: payload
+  };
+}
+
+function acknowledgeCommand(commandId, payload = {}) {
+  const item = store.commands.find(command => command.id === commandId);
+  if (!item) return null;
+  item.status = text(pick(payload, 'status', 'Status'), 'Processado');
+  item.result = text(pick(payload, 'result', 'Result', 'message', 'Message'), null);
+  item.processedBy = text(pick(payload, 'processedBy', 'ProcessedBy'), 'RPA');
+  item.processedAt = new Date().toISOString();
+  item.ackPayload = payload;
+  return item;
+}
+
+function serveStatic(res, pathname) {
   const safePath = pathname === '/' ? '/index.html' : pathname;
   const filePath = path.normalize(path.join(PUBLIC_DIR, safePath));
   if (!filePath.startsWith(PUBLIC_DIR)) return sendJson(res, 403, { ok: false, error: 'Forbidden' });
@@ -403,30 +383,35 @@ function serveStatic(req, res, pathname) {
 
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = requestUrl.pathname;
+  const pathname = normalizePathname(requestUrl.pathname);
 
-  if (req.method === 'GET' && pathname === '/api/health') {
+  if (req.method === 'OPTIONS') return sendJson(res, 204, {});
+
+  if (req.method === 'GET' && (pathname === '/api/health' || pathname === '/health')) {
     return sendJson(res, 200, {
+      ok: true,
       status: 'online',
       service: 'external-telemetry-dashboard',
       latestHeartbeat: store.latest?.heartbeat || null,
       historyItems: store.history.length,
       commandItems: store.commands.length,
+      telemetryAuthRequired: REQUIRE_TELEMETRY_KEY,
       time: new Date().toISOString()
     });
   }
 
-  if (req.method === 'GET' && pathname === '/health') {
-    return sendJson(res, 200, { ok: true, service: 'external-telemetry-dashboard', time: new Date().toISOString() });
-  }
-
-  if (req.method === 'GET' && pathname === '/api/telemetry/latest') {
+  if (req.method === 'GET' && (pathname === '/api/telemetry/latest' || pathname === '/api/latest')) {
     if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.' });
     return sendJson(res, 200, store.latest);
   }
 
+  if (req.method === 'GET' && (pathname === '/api/debug/latest' || pathname === '/api/raw/latest')) {
+    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.' });
+    return sendJson(res, 200, { ok: true, receivedAt: store.latest.receivedAt, rawPayload: store.latest.rawPayload, normalized: store.latest });
+  }
+
   if (req.method === 'GET' && pathname === '/api/state') {
-    return sendJson(res, 200, { ok: true, latest: store.latest, historyCount: store.history.length });
+    return sendJson(res, 200, { ok: true, latest: store.latest, historyCount: store.history.length, commands: store.commands.slice(-50) });
   }
 
   if (req.method === 'GET' && (pathname === '/api/telemetry/history' || pathname === '/api/history')) {
@@ -441,7 +426,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/logs') {
-    const take = Math.min(number(requestUrl.searchParams.get('take'), 120), 300);
+    const take = Math.min(number(requestUrl.searchParams.get('take'), 120), 500);
     return sendJson(res, 200, store.logs.slice(-take));
   }
 
@@ -458,24 +443,22 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && pathname === '/api/telemetry') {
-    if (!isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized telemetry write.' });
-    return handlePostJson(req, res, (parsed) => {
-      const validationError = validateTelemetry(parsed);
-      if (validationError) return sendJson(res, 400, { ok: false, error: validationError });
-      const item = normalizeTelemetry(parsed);
+  if (req.method === 'POST' && ['/api/telemetry', '/telemetry', '/api/metrics', '/api/state'].includes(pathname)) {
+    if (REQUIRE_TELEMETRY_KEY && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized telemetry write.' });
+    return handleJson(req, res, (parsed) => {
+      const item = normalizeTelemetry(parsed, req);
       store.latest = item;
       store.history.push(item);
-      addLog('INF', `Telemetria recebida | Estado=${item.estadoFinal || '-'} | Progresso=${item.progressoPercentual || 0}%`);
+      addLog('INF', `Telemetria recebida | Exec=${item.idExecucao || '-'} | Estado=${item.estadoFinal || '-'} | Progresso=${item.progressoPercentual || 0}%`);
       persistStore();
-      return sendJson(res, 202, { ok: true, idExecucao: item.idExecucao, receivedAt: item.receivedAt });
+      return sendJson(res, 202, { ok: true, idExecucao: item.idExecucao, receivedAt: item.receivedAt, storedRawPayload: true });
     });
   }
 
   if (req.method === 'POST' && pathname === '/api/commands') {
-    return handlePostJson(req, res, (parsed) => {
+    return handleJson(req, res, (parsed) => {
       if (REQUIRE_COMMAND_SECRET && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized command write.' });
-      if (!isControlAuthorized(req, parsed)) return sendJson(res, 403, { ok: false, error: 'Invalid live control password.' });
+      if (!isControlAuthorized(req, parsed || {})) return sendJson(res, 403, { ok: false, error: 'Invalid live control password.' });
       const item = createCommand(parsed || {});
       store.commands.push(item);
       addLog('INF', `Comando registado | ${item.command}`);
@@ -485,9 +468,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && pathname.startsWith('/api/commands/') && pathname.endsWith('/ack')) {
-    if (!isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized command ack.' });
+    if (REQUIRE_COMMAND_SECRET && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized command ack.' });
     const commandId = decodeURIComponent(pathname.split('/')[3] || '');
-    return handlePostJson(req, res, (parsed) => {
+    return handleJson(req, res, (parsed) => {
       const item = acknowledgeCommand(commandId, parsed || {});
       if (!item) return sendJson(res, 404, { ok: false, error: 'Command not found.' });
       addLog('INF', `Comando actualizado | ${item.command} | ${item.status}`);
@@ -496,12 +479,12 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  if (req.method === 'GET') return serveStatic(req, res, pathname);
-  return sendJson(res, 405, { ok: false, error: 'Method not allowed' });
+  if (req.method === 'GET') return serveStatic(res, pathname);
+  return sendJson(res, 405, { ok: false, error: 'Method not allowed', method: req.method, pathname });
 });
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[INF] Dashboard externo iniciado em http://0.0.0.0:${PORT}`);
-  console.log('[INF] UI: GET /');
-  console.log('[INF] Telemetria: POST /api/telemetry');
+  console.log(`[INF] Telemetria: POST /api/telemetry | AuthObrigatoria=${REQUIRE_TELEMETRY_KEY}`);
+  console.log('[INF] Live Control: POST /api/commands | Senha via payload/header');
 });
