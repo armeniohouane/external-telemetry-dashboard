@@ -37,14 +37,16 @@ function normalizePathname(value) {
   return clean.replace(/\/$/, '') || '/';
 }
 
-function sendJson(res, statusCode, payload) {
+function sendJson(res, statusCode, payload, extraHeaders = {}) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Telemetry-Key,X-Dashboard-Secret,X-Control-Password,X-Live-Control-Password,X-RPA-Source,X-RPA-Instance',
-    'X-Content-Type-Options': 'nosniff'
+    'Access-Control-Expose-Headers': 'X-Latest-Received-At',
+    'X-Content-Type-Options': 'nosniff',
+    ...extraHeaders
   });
   res.end(JSON.stringify(payload, null, 2));
 }
@@ -273,7 +275,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && (pathname === '/api/telemetry/latest' || pathname === '/api/latest')) {
     if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only-24h' });
-    return sendJson(res, 200, store.latest);
+    return sendJson(res, 200, store.latest, { 'X-Latest-Received-At': store.latestReceivedAt || '' });
   }
 
   if (req.method === 'GET' && (pathname === '/api/debug/latest' || pathname === '/api/raw/latest')) {
@@ -318,7 +320,7 @@ const server = http.createServer(async (req, res) => {
       'Access-Control-Allow-Origin': '*'
     });
     res.write(': connected\n\n');
-    if (store.latest) res.write(`data: ${JSON.stringify({ type: 'telemetry', latest: store.latest })}\n\n`);
+    if (store.latest) res.write(`data: ${JSON.stringify({ type: 'telemetry', latest: store.latest, receivedAt: store.latestReceivedAt })}\n\n`);
     eventClients.add(res);
     req.on('close', () => eventClients.delete(res));
     return;
@@ -336,7 +338,7 @@ const server = http.createServer(async (req, res) => {
       store.history.push({ receivedAt, item });
       pruneHistory();
       addLog('INF', `Telemetria recebida | Exec=${item.idExecucao || item.Id_Execucao || '-'} | Estado=${item.estadoFinal || item.Estado_Final || '-'} | Progresso=${item.percentagemConcluida ?? '-'}%`);
-      broadcast({ type: 'telemetry', latest: item });
+      broadcast({ type: 'telemetry', latest: item, receivedAt });
       return sendJson(res, 202, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, idExecucao: item.idExecucao || item.Id_Execucao || null, receivedAt, shownInDashboard: true });
     });
   }
