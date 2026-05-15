@@ -25,7 +25,7 @@
           <button data-page="logs" data-local-only>Logs</button>
         </nav>
         <div class="header-actions">
-          <span class="pill"><span id="agentHealthDot" class="dot"></span><span id="agentHealthText">Activo</span></span>
+          <span class="pill"><span id="agentHealthDot" class="dot danger"></span><span id="agentHealthText">Sem telemetria</span></span>
           <span class="pill pink" id="dataSourceSide">DEV</span>
           <div class="runtime-switcher">
             <span>Exibir</span>
@@ -73,6 +73,7 @@
           <div class="current-processing">
             <div class="current-processing-item"><span>CIF Actual</span><strong id="currentCif">--</strong></div>
             <div class="current-processing-item"><span>Campo Actual</span><strong id="currentField">--</strong></div>
+            <div class="current-processing-item"><span>Ficheiros Processados</span><strong id="currentFilesProcessed">0</strong></div>
             <div class="current-processing-item file-name-disabled" style="display:none" aria-hidden="true"><span>Ficheiro Actual</span><strong id="currentFile">Oculto no dashboard</strong></div>
           </div>
         </div>
