@@ -44,6 +44,37 @@ function normalizeRuntime(value) { const runtime = String(value || "web").toLowe
 function runtimeDisplayName(value) { return normalizeRuntime(value) === "api" ? "API" : "Web"; }
 function getField(data, camel, pascal, fallback = 0) { return pick(data, camel, pascal) ?? fallback; }
 
+function field(data, ...keys) { return pick(data, ...keys); }
+function metric(data, ...keys) { return n(field(data, ...keys)); }
+function executionId(data) { return field(data, "idExecucao", "Id_Execucao", "id_execucao", "IdExecucao") ?? "--"; }
+function estadoFinal(data) { return field(data, "estadoFinal", "Estado_Final", "EstadoFinal") ?? "--"; }
+function runtimeValue(data) { return field(data, "runtimeActual", "Runtime_Actual", "RuntimeActual") ?? "web"; }
+function modeloValue(data) { return field(data, "modeloSeleccionado", "modeloSelecionado", "modeloActual", "Modelo_Seleccionado", "Modelo_Selecionado", "ModeloActual") ?? "--"; }
+function historyDate(data) { return field(data, "dataHoraOrigem", "heartbeat", "Data_Hora_Fim", "Data_Hora_Inicio", "Criado_Em", "DataHoraFim", "DataHoraInicio"); }
+function historyMs(data) { const d = new Date(historyDate(data)); return Number.isNaN(d.getTime()) ? 0 : d.getTime(); }
+function isLast24h(data) { const ms = historyMs(data); return !ms || (Date.now() - ms <= 24 * 60 * 60 * 1000); }
+function pruneClientHistory() { State.history = (State.history || []).filter(isLast24h).slice(-20000); }
+function appendHistoryItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return;
+  const incoming = asRawHistoryItem(item);
+  const key = [executionId(incoming), historyDate(incoming), metric(incoming, "cifsProcessados", "CIFs_Processados")].join("|");
+  const last = State.history[State.history.length - 1];
+  const lastKey = last ? [executionId(last), historyDate(last), metric(last, "cifsProcessados", "CIFs_Processados")].join("|") : "";
+  if (key !== lastKey) State.history.push(incoming);
+  pruneClientHistory();
+}
+function uniqueExecutionItems(items) {
+  const byId = new Map();
+  const withoutId = [];
+  for (const item of (items || []).filter(isLast24h)) {
+    const id = executionId(item);
+    if (!id || id === "--") { withoutId.push(item); continue; }
+    const current = byId.get(String(id));
+    if (!current || historyMs(item) >= historyMs(current)) byId.set(String(id), item);
+  }
+  return [...byId.values(), ...withoutId].sort((a, b) => historyMs(b) - historyMs(a));
+}
+
 function emptyLatest() {
   return {
     idExecucao: "--",
@@ -132,6 +163,7 @@ async function apiPost(path, payload) {
 async function refreshLatest() {
   try {
     State.latest = asRawTelemetry(await apiGet("/api/telemetry/latest"));
+    appendHistoryItem(State.latest);
     setText("dataSourceSide", "REAL");
   } catch (e) {
     if (!State.latest || String(e?.message || "").includes("404")) State.latest = null;
@@ -142,9 +174,10 @@ async function refreshLatest() {
 
 async function refreshHistory() {
   try {
-    const data = await apiGet("/api/telemetry/history");
+    const data = await apiGet("/api/telemetry/history?take=25000");
     const items = Array.isArray(data) ? data : (data.items || []);
-    State.history = items.map(asRawHistoryItem).reverse();
+    State.history = items.map(asRawHistoryItem).filter(isLast24h);
+    pruneClientHistory();
   } catch (e) {
     State.history = [];
   }
@@ -211,7 +244,7 @@ function renderRealtime() {
   setText("mProgressPercent", formatPercent(progress));
   setText("currentCif", d.cifActual || "Sanitizado");
   setText("currentField", d.campoActual || "--");
-  setText("currentFile", d.ficheiroActual || "Sanitizado");
+  setText("currentFile", "Oculto no dashboard");
   setText("kpiProcessed", formatNumber(d.cifsProcessados));
   setText("kpiProcessedMeta", `${formatPercent(progress)} da fila`);
   setText("kpiSuccess", formatNumber(d.cifsSucesso));
@@ -271,6 +304,22 @@ function renderRealtime() {
 }
 
 function buildTimeline(d) {
+  const historyPoints = (State.history || [])
+    .filter(isLast24h)
+    .filter(x => historyDate(x) && (metric(x, "cifsProcessados", "CIFs_Processados") > 0 || metric(x, "cifsRecebidos", "CIFs_Recebidos") > 0))
+    .sort((a, b) => historyMs(a) - historyMs(b))
+    .slice(-300)
+    .map(x => ({
+      label: formatTime(historyDate(x)),
+      timestamp: historyDate(x),
+      processed: metric(x, "cifsProcessados", "CIFs_Processados"),
+      success: metric(x, "cifsSucesso", "CIFs_Sucesso"),
+      notFound: metric(x, "cifsNaoEncontrado", "CIFs_Nao_Encontrado"),
+      errors: metric(x, "cifsComErro", "CIFs_Com_Erro"),
+      progress: ratio(metric(x, "cifsProcessados", "CIFs_Processados"), metric(x, "cifsRecebidos", "CIFs_Recebidos"))
+    }));
+  if (historyPoints.length) return historyPoints;
+
   if (Array.isArray(d.timeline) && d.timeline.length) return d.timeline.slice(-12);
   if (d.heartbeat || n(d.cifsProcessados) > 0) {
     return [{ label: formatTime(d.heartbeat || new Date()), timestamp: d.heartbeat || new Date().toISOString(), processed: n(d.cifsProcessados), success: n(d.cifsSucesso), notFound: n(d.cifsNaoEncontrado), errors: n(d.cifsComErro), progress: ratio(d.cifsProcessados, d.cifsRecebidos) }];
@@ -298,11 +347,13 @@ function renderWorkers(workers) {
 }
 
 function renderHistory() {
-  const items = State.history;
-  const processed = items.reduce((a, x) => a + n(x.cifsProcessados), 0);
-  const success = items.reduce((a, x) => a + n(x.cifsSucesso), 0);
-  const ftp = items.reduce((a, x) => a + n(x.ficheirosFtp550), 0);
-  const avg = items.length ? items.reduce((a, x) => a + n(x.tempoMedioPorCif), 0) / items.length : 0;
+  pruneClientHistory();
+  const rawItems = State.history || [];
+  const items = uniqueExecutionItems(rawItems);
+  const processed = items.reduce((a, x) => a + metric(x, "cifsProcessados", "CIFs_Processados"), 0);
+  const success = items.reduce((a, x) => a + metric(x, "cifsSucesso", "CIFs_Sucesso"), 0);
+  const ftp = items.reduce((a, x) => a + metric(x, "ficheirosFtp550", "Ficheiros_FTP_550"), 0);
+  const avg = items.length ? items.reduce((a, x) => a + metric(x, "tempoMedioPorCif", "Tempo_Medio_Por_CIF"), 0) / items.length : 0;
   setText("histExecutions", formatNumber(items.length));
   setText("histProcessed", formatNumber(processed));
   setText("histSuccessRate", formatPercent(ratio(success, processed)));
@@ -311,13 +362,16 @@ function renderHistory() {
   const tbody = $("historyTableBody");
   if (tbody) {
     tbody.innerHTML = items.length
-      ? items.map(x => `<tr><td>${escapeHtml(x.idExecucao || "--")}</td><td>${formatDateTime(x.dataHoraOrigem || x.heartbeat)}</td><td>${escapeHtml(x.estadoFinal || "--")}</td><td>${runtimeDisplayName(x.runtimeActual)}</td><td>${escapeHtml(x.modeloSeleccionado || x.modeloActual || "--")}</td><td>${formatNumber(x.cifsProcessados)}</td><td>${formatNumber(x.cifsSucesso)}</td><td>${formatNumber(x.cifsInvalidos)}</td><td>${formatNumber(x.cifsComErro)}</td><td>${formatNumber(x.ficheirosFtp550)}</td><td>${formatDuration(x.tempoMedioPorCif)}</td></tr>`).join("")
-      : `<tr><td colspan="11">Sem histórico real recebido.</td></tr>`;
+      ? items.map(x => `<tr><td>${escapeHtml(executionId(x))}</td><td>${formatDateTime(historyDate(x))}</td><td>${escapeHtml(estadoFinal(x))}</td><td>${runtimeDisplayName(runtimeValue(x))}</td><td>${escapeHtml(modeloValue(x))}</td><td>${formatNumber(metric(x, "cifsProcessados", "CIFs_Processados"))}</td><td>${formatNumber(metric(x, "cifsSucesso", "CIFs_Sucesso"))}</td><td>${formatNumber(metric(x, "cifsInvalidos", "CIFs_Invalidos"))}</td><td>${formatNumber(metric(x, "cifsComErro", "CIFs_Com_Erro"))}</td><td>${formatNumber(metric(x, "ficheirosFtp550", "Ficheiros_FTP_550"))}</td><td>${formatDuration(metric(x, "tempoMedioPorCif", "Tempo_Medio_Por_CIF"))}</td></tr>`).join("")
+      : `<tr><td colspan="11">Sem histórico real recebido nas últimas 24 horas.</td></tr>`;
   }
-  const labels = items.length ? items.map(x => String(x.idExecucao || "--").slice(-8)) : ["--"];
-  const chartItems = items.length ? items : [emptyLatest()];
-  chart("chartDailyKpis", { ...baseChartOptions(), chart: { ...baseChartOptions().chart, type: "bar", height: 310 }, colors: [colors.blue, colors.green], xaxis: { categories: labels }, series: [{ name: "Processados", data: chartItems.map(x => n(x.cifsProcessados)) }, { name: "Sucesso", data: chartItems.map(x => n(x.cifsSucesso)) }] });
-  chart("chartPeriodKpis", { ...baseChartOptions(), chart: { ...baseChartOptions().chart, type: "line", height: 310 }, colors: [colors.green, colors.red, colors.amber], xaxis: { categories: labels }, series: [{ name: "Sucesso %", data: chartItems.map(x => Math.round(ratio(x.cifsSucesso, x.cifsProcessados))) }, { name: "Erro %", data: chartItems.map(x => Math.round(ratio(x.cifsComErro, x.cifsProcessados))) }, { name: "FTP 550 / Ficheiros %", data: chartItems.map(x => Math.round(ratio(x.ficheirosFtp550, x.ficheirosAvaliados || x.ficheirosRecebidos))) }] });
+  const executionLabels = items.length ? items.slice().reverse().map(x => String(executionId(x)).slice(-8)) : ["--"];
+  const executionChartItems = items.length ? items.slice().reverse() : [emptyLatest()];
+  chart("chartDailyKpis", { ...baseChartOptions(), chart: { ...baseChartOptions().chart, type: "bar", height: 310 }, colors: [colors.blue, colors.green], xaxis: { categories: executionLabels }, series: [{ name: "Processados", data: executionChartItems.map(x => metric(x, "cifsProcessados", "CIFs_Processados")) }, { name: "Sucesso", data: executionChartItems.map(x => metric(x, "cifsSucesso", "CIFs_Sucesso")) }] });
+
+  const timeline = buildTimeline(State.latest || emptyLatest());
+  const timelineLabels = timeline.map(x => x.label || formatTime(x.timestamp));
+  chart("chartPeriodKpis", { ...baseChartOptions(), chart: { ...baseChartOptions().chart, type: "line", height: 310 }, colors: [colors.green, colors.red, colors.amber], xaxis: { categories: timelineLabels }, series: [{ name: "Sucesso %", data: timeline.map(x => Math.round(ratio(x.success, x.processed))) }, { name: "Erro %", data: timeline.map(x => Math.round(ratio(x.errors, x.processed))) }, { name: "Progresso %", data: timeline.map(x => Math.round(n(x.progress))) }] });
 }
 
 function renderCommandAudit() {
@@ -403,8 +457,14 @@ async function setupLogs() {
       const message = JSON.parse(event.data);
       if (message.type === "telemetry" && message.latest) {
         State.latest = asRawTelemetry(message.latest);
+        appendHistoryItem(State.latest);
         setText("dataSourceSide", "LIVE");
         renderRealtime();
+        if (State.activePage === "history") renderHistory();
+        return;
+      }
+      if (message.type === "db-history") {
+        refreshHistory();
         return;
       }
       if (message.type === "command") {
@@ -423,3 +483,4 @@ refreshHistory();
 refreshCommands();
 setupLogs();
 setInterval(refreshLatest, AppConfig.autoRefreshMs);
+setInterval(refreshHistory, Math.max(AppConfig.autoRefreshMs * 3, 15000));
