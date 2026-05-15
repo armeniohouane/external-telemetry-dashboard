@@ -73,7 +73,7 @@
           <div class="current-processing">
             <div class="current-processing-item"><span>CIF Actual</span><strong id="currentCif">--</strong></div>
             <div class="current-processing-item"><span>Campo Actual</span><strong id="currentField">--</strong></div>
-            <div class="current-processing-item"><span>Ficheiro Actual</span><strong id="currentFile">--</strong></div>
+            <div class="current-processing-item file-name-disabled" style="display:none" aria-hidden="true"><span>Ficheiro Actual</span><strong id="currentFile">Oculto no dashboard</strong></div>
           </div>
         </div>
 
@@ -153,19 +153,19 @@
       </section>
 
       <section id="page-history" class="page">
-        <div class="hero"><div><h2>Histórico E Comparação</h2><p>KPIs diários, semanais e mensais, com comparação de execuções por volume, sucesso, erro, FTP 550 e tempo médio.</p></div><button class="button primary" id="applyHistoryFilterBtn">Actualizar Histórico</button></div>
+        <div class="hero"><div><h2>Histórico E Comparação</h2><p>Histórico em memória das últimas 24 horas, combinado com execuções sincronizadas da tabela SQL e sem criação de ficheiros locais.</p></div><button class="button primary" id="applyHistoryFilterBtn">Actualizar Histórico</button></div>
         <div class="grid cols-5">
-          <div class="card kpi primary"><div class="card-body"><div class="label">Execuções</div><div class="value" id="histExecutions">0</div><div class="meta">Total no período</div></div></div>
-          <div class="card kpi"><div class="card-body"><div class="label">CIFs Processados</div><div class="value" id="histProcessed">0</div><div class="meta">Somatório das execuções</div></div></div>
+          <div class="card kpi primary"><div class="card-body"><div class="label">Execuções</div><div class="value" id="histExecutions">0</div><div class="meta">Últimas 24 horas</div></div></div>
+          <div class="card kpi"><div class="card-body"><div class="label">CIFs Processados</div><div class="value" id="histProcessed">0</div><div class="meta">Somatório das execuções únicas</div></div></div>
           <div class="card kpi good"><div class="card-body"><div class="label">Taxa Média De Sucesso</div><div class="value" id="histSuccessRate">0%</div><div class="meta">Média ponderada</div></div></div>
-          <div class="card kpi warn"><div class="card-body"><div class="label">FTP 550</div><div class="value" id="histFtp550">0</div><div class="meta">Total no período</div></div></div>
+          <div class="card kpi warn"><div class="card-body"><div class="label">FTP 550</div><div class="value" id="histFtp550">0</div><div class="meta">Últimas 24 horas</div></div></div>
           <div class="card kpi"><div class="card-body"><div class="label">Tempo Médio</div><div class="value" id="histAvgTime">0s</div><div class="meta">Por CIF processado</div></div></div>
         </div>
         <div class="grid cols-2 section-gap">
-          <div class="card"><div class="card-header"><div><h3 class="card-title">KPIs Por Execução</h3><p class="card-subtitle">Volume e sucesso por execução.</p></div></div><div class="card-body"><div id="chartDailyKpis" class="apex-chart"></div></div></div>
+          <div class="card"><div class="card-header"><div><h3 class="card-title">KPIs Por Execução</h3><p class="card-subtitle">Volume e sucesso por execução sincronizada/recebida.</p></div></div><div class="card-body"><div id="chartDailyKpis" class="apex-chart"></div></div></div>
           <div class="card"><div class="card-header"><div><h3 class="card-title">Tendência De Qualidade</h3><p class="card-subtitle">Sucesso, erro e FTP 550 em percentagem.</p></div></div><div class="card-body"><div id="chartPeriodKpis" class="apex-chart"></div></div></div>
         </div>
-        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Execuções Recentes</h3><p class="card-subtitle">Lista consolidada para auditoria operacional e análise histórica.</p></div></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Id Execução</th><th>Data</th><th>Estado Final</th><th>Runtime</th><th>Modelo</th><th>CIFs</th><th>Sucesso</th><th>Inválidos</th><th>Erro</th><th>FTP 550</th><th>Tempo Médio</th></tr></thead><tbody id="historyTableBody"></tbody></table></div></div></div>
+        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Execuções Recentes</h3><p class="card-subtitle">Lista consolidada das execuções únicas recebidas pela telemetria e pela tabela SQL nas últimas 24 horas.</p></div></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Id Execução</th><th>Data</th><th>Estado Final</th><th>Runtime</th><th>Modelo</th><th>CIFs</th><th>Sucesso</th><th>Inválidos</th><th>Erro</th><th>FTP 550</th><th>Tempo Médio</th></tr></thead><tbody id="historyTableBody"></tbody></table></div></div></div>
       </section>
 
       <section id="page-control" class="page">
