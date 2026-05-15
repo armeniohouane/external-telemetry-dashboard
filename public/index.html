@@ -1,87 +1,206 @@
-<!doctype html>
-<html lang="pt">
+<!DOCTYPE html>
+<html lang="pt-PT">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dashboard Externo | RPA Clientes Irregulares</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clientes Irregulares | Dashboard Agente IA</title>
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-    <main class="page">
-        <section class="hero">
-            <div>
-                <p class="eyebrow">Telemetria Sanitizada</p>
-                <h1>RPA Clientes Irregulares</h1>
-                <p class="subtitle">Dashboard externo apenas com métricas operacionais. Sem CIFs, caminhos FTP, nomes de ficheiros ou logs brutos.</p>
-            </div>
-            <div class="status-pill" id="connectionStatus">A carregar...</div>
-        </section>
+  <div class="app">
+    <header class="header">
+      <div class="header-inner">
+        <div class="brand">
+          <div class="brand-mark">CI</div>
+          <div class="brand-text">
+            <h1>Clientes Irregulares</h1>
+            <p>Observabilidade e controlo do Agente IA</p>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Navegação Principal">
+          <button class="active" data-page="realtime">Tempo Real</button>
+          <button data-page="history">Histórico</button>
+          <button data-page="control">Live Control</button>
+          <button data-page="logs" data-local-only>Logs</button>
+        </nav>
+        <div class="header-actions">
+          <span class="pill"><span id="agentHealthDot" class="dot"></span><span id="agentHealthText">Activo</span></span>
+          <span class="pill pink" id="dataSourceSide">DEV</span>
+          <div class="runtime-switcher">
+            <span>Exibir</span>
+            <select id="runtimeViewSelector" aria-label="Runtime a exibir no dashboard">
+              <option value="web" selected>WEB - Copilot</option>
+              <option value="api">API</option>
+            </select>
+          </div>
+          <button class="button" id="refreshNowBtn">Actualizar</button>
+        </div>
+      </div>
+    </header>
 
-        <section class="current-card">
-            <div>
-                <p class="label">Estado Actual</p>
-                <h2 id="estado">-</h2>
-            </div>
-            <div class="meta-grid">
-                <div><span>Instância</span><strong id="instanceName">-</strong></div>
-                <div><span>Execução</span><strong id="idExecucao">-</strong></div>
-                <div><span>Campo Actual</span><strong id="campoAtual">-</strong></div>
-                <div><span>Ficheiro Do CIF Actual</span><strong id="ficheiroAtual">-</strong></div>
-                <div><span>Última Actualização</span><strong id="receivedAt">-</strong></div>
-                <div><span>Último Evento</span><strong id="ultimoEvento">-</strong></div>
-            </div>
-            <div class="progress-wrap">
-                <div class="progress-header">
-                    <span>Progresso</span>
-                    <strong id="progressoLabel">0%</strong>
-                </div>
-                <div class="progress"><div id="progressoBar"></div></div>
-            </div>
-        </section>
+    <main class="main">
+      <section id="page-realtime" class="page active">
+        <div class="hero">
+          <div>
+            <h2>Visão Geral Da Execução</h2>
+            <p>Monitorização dos CIFs, ficheiros, uploads/requests, resultados, erros do modelo, normalização, workers e desempenho global da execução em curso.</p>
+            <div class="runtime-note">Runtime visualizado: <strong id="runtimeViewLabel">Web</strong> · Runtime actual: <strong id="runtimeActualLabel">Web</strong></div>
+          </div>
+          <span class="pill pink"><span id="currentExecutionId">Execução --</span></span>
+        </div>
 
-        <section class="cards">
-            <article class="card"><span>CIFs Recebidos</span><strong id="cifsRecebidos">0</strong></article>
-            <article class="card"><span>CIFs Processados</span><strong id="cifsProcessados">0</strong></article>
-            <article class="card"><span>CIFs Sucesso</span><strong id="cifsSucesso">0</strong><small id="sucessoPercentual">0%</small></article>
-            <article class="card"><span>CIFs Não Encontrado</span><strong id="cifsNaoEncontrado">0</strong></article>
-            <article class="card"><span>CIFs Inválidos</span><strong id="cifsInvalidos">0</strong></article>
-            <article class="card"><span>CIFs Com Erro</span><strong id="cifsComErro">0</strong></article>
-            <article class="card"><span>Ficheiros Na Fila</span><strong id="ficheirosNaFila">0</strong></article>
-            <article class="card"><span>Ficheiros Avaliados</span><strong id="ficheirosAvaliados">0</strong></article>
-            <article class="card"><span>FTP 550</span><strong id="ficheirosFtp550">0</strong></article>
-            <article class="card"><span>Requests Gemini</span><strong id="requestsGemini">0</strong></article>
-            <article class="card"><span>Timeouts Do Agente</span><strong id="timeoutsAgente">0</strong></article>
-            <article class="card"><span>Erros Do Agente/API</span><strong id="errosApi">0</strong></article>
-        </section>
-
-
-        
-
-        <section class="history-section">
-            <div class="section-header">
-                <h2>Histórico Recente</h2>
-                <p>Últimos pacotes de telemetria recebidos.</p>
+        <div class="progress-panel">
+          <div class="progress-top">
+            <div class="progress-title">
+              <h3>Progresso Da Execução</h3>
+              <span class="status info" id="executionStatus">A aguardar dados</span>
             </div>
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Recebido Em</th>
-                            <th>Estado</th>
-                            <th>Progresso</th>
-                            <th>CIFs Processados</th>
-                            <th>Sucesso</th>
-                            <th>Não Encontrado</th>
-                            <th>Erros API</th>
-                        </tr>
-                    </thead>
-                    <tbody id="historyBody">
-                        <tr><td colspan="7">Sem dados ainda.</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </section>
+            <span class="pill"><span class="dot" id="heartbeatDot"></span> Último Heartbeat: <strong id="lastHeartbeatSide">--:--:--</strong></span>
+          </div>
+          <div class="progress-wrap"><div class="progress-bar" id="executionProgressBar"></div></div>
+          <div class="progress-meta">
+            <div class="progress-box"><span>CIFs Recebidos</span><strong id="mReceived">0</strong></div>
+            <div class="progress-box"><span>Ficheiros Recebidos</span><strong id="mFilesReceived">0</strong></div>
+            <div class="progress-box"><span>CIFs Processados</span><strong id="mProcessed">0</strong></div>
+            <div class="progress-box"><span>CIFs Pendentes</span><strong id="mPending">0</strong></div>
+            <div class="progress-box"><span>Percentual Concluído</span><strong id="mProgressPercent">0%</strong></div>
+          </div>
+          <div class="progress-live-chart">
+            <div class="progress-live-title"><span>Evolução Dinâmica Do Progresso</span><span id="progressChartLastPoint">--</span></div>
+            <div id="chartProgressDynamic" class="apex-chart progress-chart"></div>
+          </div>
+          <div class="current-processing">
+            <div class="current-processing-item"><span>CIF Actual</span><strong id="currentCif">--</strong></div>
+            <div class="current-processing-item"><span>Campo Actual</span><strong id="currentField">--</strong></div>
+            <div class="current-processing-item"><span>Ficheiro Actual</span><strong id="currentFile">--</strong></div>
+          </div>
+        </div>
+
+        <div class="grid cols-6">
+          <div class="card kpi primary"><div class="card-body"><div class="kpi-icon">C</div><div class="label">CIFs Processados</div><div class="value" id="kpiProcessed">0</div><div class="meta"><span class="trend-up">▲</span><span id="kpiProcessedMeta">0% da fila</span></div></div></div>
+          <div class="card kpi good"><div class="card-body"><div class="kpi-icon">✓</div><div class="label">CIFs Com Sucesso</div><div class="value" id="kpiSuccess">0</div><div class="meta"><span id="kpiSuccessRate">0%</span> de taxa de sucesso</div></div></div>
+          <div class="card kpi warn"><div class="card-body"><div class="kpi-icon">?</div><div class="label">Não Encontrado</div><div class="value" id="kpiNotFound">0</div><div class="meta">Dados não localizados</div></div></div>
+          <div class="card kpi bad"><div class="card-body"><div class="kpi-icon">!</div><div class="label">CIFs Com Erro</div><div class="value" id="kpiCifErrors">0</div><div class="meta">Falhas por CIF</div></div></div>
+          <div class="card kpi blue"><div class="card-body"><div class="kpi-icon">↑</div><div class="label" id="kpiTransportLabel">Uploads Feitos</div><div class="value" id="kpiUploads">0</div><div class="meta" id="kpiTransportMeta">Ficheiros anexados ao agente</div></div></div>
+          <div class="card kpi dark"><div class="card-body"><div class="kpi-icon">AI</div><div class="label">Modelo Usando</div><div class="value small-text" id="kpiModel">--</div><div class="meta" id="kpiModelMeta">Sem fallback</div></div></div>
+        </div>
+
+        <div id="runtimeWebDashboard" class="runtime-panel runtime-web-panel active">
+          <div class="grid cols-6 section-gap">
+            <div class="card kpi"><div class="card-body"><div class="label">Backoff Total</div><div class="value" id="kpiBackoffTotal">0m</div><div class="meta">Minutos parados por intervalo/backoff</div></div></div>
+            <div class="card kpi warn"><div class="card-body"><div class="label">FTP 550</div><div class="value" id="kpiFtp550">0</div><div class="meta" id="kpiFtpMeta">Ficheiros indisponíveis</div></div></div>
+            <div class="card kpi bad"><div class="card-body"><div class="label">Erros Do Modelo</div><div class="value" id="kpiModelErrors">0</div><div class="meta">Timeouts + erros de resposta</div></div></div>
+            <div class="card kpi"><div class="card-body"><div class="label">Timeouts Do Agente</div><div class="value" id="kpiTimeouts">0</div><div class="meta">Respostas fora do limite</div></div></div>
+            <div class="card kpi primary"><div class="card-body"><div class="label">Normalizações</div><div class="value" id="kpiNormalizations">0</div><div class="meta" id="kpiNormalizationsMeta">0 com sucesso</div></div></div>
+            <div class="card kpi"><div class="card-body"><div class="label">Tempo Médio Por CIF</div><div class="value" id="kpiAvgTime">0s</div><div class="meta" id="kpiAvgTimeMeta">Resposta agente: 0s</div></div></div>
+          </div>
+        </div>
+
+        <div id="runtimeApiDashboard" class="runtime-panel runtime-api-panel">
+          <div class="grid cols-6 section-gap">
+            <div class="card kpi primary"><div class="card-body"><div class="label">Workers Activos</div><div class="value" id="apiWorkersActive">0</div><div class="meta" id="apiWorkersMeta">0 workers configurados</div></div></div>
+            <div class="card kpi warn"><div class="card-body"><div class="label">Workers Em Backoff</div><div class="value" id="apiWorkersBackoff">0</div><div class="meta">Workers temporariamente pausados</div></div></div>
+            <div class="card kpi"><div class="card-body"><div class="label">RPM Actual</div><div class="value" id="apiRpmActual">0</div><div class="meta" id="apiRpmMeta">Limite: 0/min</div></div></div>
+            <div class="card kpi blue"><div class="card-body"><div class="label">RPD Hoje</div><div class="value" id="apiRpdToday">0</div><div class="meta" id="apiRpdMeta">Limite diário: 0</div></div></div>
+            <div class="card kpi"><div class="card-body"><div class="label">TPM Actual</div><div class="value" id="apiTpmActual">0</div><div class="meta" id="apiTpmMeta">Tokens/min disponíveis</div></div></div>
+            <div class="card kpi dark"><div class="card-body"><div class="label">TPD Hoje</div><div class="value" id="apiTpdToday">0</div><div class="meta" id="apiTpdMeta">Tokens/dia usados</div></div></div>
+          </div>
+          <div class="grid cols-5 section-gap">
+            <div class="card kpi"><div class="card-body"><div class="label">CIFs Por Worker</div><div class="value" id="apiBatchSize">0</div><div class="meta">Máximo de CIFs que cada worker pode pegar</div></div></div>
+            <div class="card kpi"><div class="card-body"><div class="label">Requests Hoje</div><div class="value" id="apiRequestsToday">0</div><div class="meta">Chamadas API na execução/dia</div></div></div>
+            <div class="card kpi"><div class="card-body"><div class="label">Input Tokens</div><div class="value" id="apiInputTokens">0</div><div class="meta">Tokens de entrada usados</div></div></div>
+            <div class="card kpi"><div class="card-body"><div class="label">Output Tokens</div><div class="value" id="apiOutputTokens">0</div><div class="meta">Tokens de saída usados</div></div></div>
+            <div class="card kpi good"><div class="card-body"><div class="label">Custo Estimado</div><div class="value" id="apiEstimatedCost">$0</div><div class="meta" id="apiQuotaMeta">Quota operacional</div></div></div>
+          </div>
+        </div>
+
+        <div class="charts-grid section-gap">
+          <div class="card"><div class="card-header"><div><h3 class="card-title">Evolução Da Execução</h3><p class="card-subtitle">Processados, sucessos, não encontrados e erros ao longo do tempo.</p></div></div><div class="card-body"><div id="chartRealtimeLine" class="apex-chart"></div></div></div>
+          <div class="card"><div class="card-header"><div><h3 class="card-title">Distribuição Dos Resultados</h3><p class="card-subtitle">Sucesso, não encontrado, inválido e erro.</p></div></div><div class="card-body"><div id="chartResultDonut" class="apex-chart small"></div></div></div>
+        </div>
+
+        <div class="grid cols-3 section-gap">
+          <div class="card"><div class="card-header"><div><h3 class="card-title">Classificação De Erros</h3><p class="card-subtitle">Falhas mais relevantes para operação.</p></div></div><div class="card-body"><div id="chartErrorTypes" class="apex-chart small"></div></div></div>
+          <div class="card"><div class="card-header"><div><h3 class="card-title">Qualidade Da Execução</h3><p class="card-subtitle">Leitura rápida dos indicadores principais.</p></div></div><div class="card-body metric-list">
+            <div class="metric-line"><span>Taxa De Sucesso</span><strong id="qualitySuccess">0%</strong></div>
+            <div class="metric-line"><span>Taxa De Inválidos</span><strong id="qualityInvalid">0%</strong></div>
+            <div class="metric-line"><span>Taxa De Erro</span><strong id="qualityError">0%</strong></div>
+            <div class="metric-line"><span>Taxa FTP 550 / Ficheiros</span><strong id="qualityFtp">0%</strong></div>
+            <div class="metric-line"><span>Normalização Com Sucesso</span><strong id="qualityNormalization">0%</strong></div>
+          </div></div>
+          <div class="card"><div class="card-header"><div><h3 class="card-title">Execução E Modelo</h3><p class="card-subtitle">Estado do modelo, requisições e fallback.</p></div></div><div class="card-body metric-list">
+            <div class="metric-line"><span>Modelo Actual</span><strong id="modelCurrent">--</strong></div>
+            <div class="metric-line"><span>Fallbacks</span><strong id="modelFallbacks">0</strong></div>
+            <div class="metric-line"><span>Erros Globais Consecutivos</span><strong id="modelGlobalErrors">0</strong></div>
+            <div class="metric-line"><span>Última Requisição</span><strong id="modelLastRequest">--</strong></div>
+            <div class="metric-line"><span>Próxima Requisição</span><strong id="modelNextRequest">--</strong></div>
+          </div></div>
+        </div>
+      </section>
+
+      <section id="page-history" class="page">
+        <div class="hero"><div><h2>Histórico E Comparação</h2><p>KPIs diários, semanais e mensais, com comparação de execuções por volume, sucesso, erro, FTP 550 e tempo médio.</p></div><button class="button primary" id="applyHistoryFilterBtn">Actualizar Histórico</button></div>
+        <div class="grid cols-5">
+          <div class="card kpi primary"><div class="card-body"><div class="label">Execuções</div><div class="value" id="histExecutions">0</div><div class="meta">Total no período</div></div></div>
+          <div class="card kpi"><div class="card-body"><div class="label">CIFs Processados</div><div class="value" id="histProcessed">0</div><div class="meta">Somatório das execuções</div></div></div>
+          <div class="card kpi good"><div class="card-body"><div class="label">Taxa Média De Sucesso</div><div class="value" id="histSuccessRate">0%</div><div class="meta">Média ponderada</div></div></div>
+          <div class="card kpi warn"><div class="card-body"><div class="label">FTP 550</div><div class="value" id="histFtp550">0</div><div class="meta">Total no período</div></div></div>
+          <div class="card kpi"><div class="card-body"><div class="label">Tempo Médio</div><div class="value" id="histAvgTime">0s</div><div class="meta">Por CIF processado</div></div></div>
+        </div>
+        <div class="grid cols-2 section-gap">
+          <div class="card"><div class="card-header"><div><h3 class="card-title">KPIs Por Execução</h3><p class="card-subtitle">Volume e sucesso por execução.</p></div></div><div class="card-body"><div id="chartDailyKpis" class="apex-chart"></div></div></div>
+          <div class="card"><div class="card-header"><div><h3 class="card-title">Tendência De Qualidade</h3><p class="card-subtitle">Sucesso, erro e FTP 550 em percentagem.</p></div></div><div class="card-body"><div id="chartPeriodKpis" class="apex-chart"></div></div></div>
+        </div>
+        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Execuções Recentes</h3><p class="card-subtitle">Lista consolidada para auditoria operacional e análise histórica.</p></div></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Id Execução</th><th>Data</th><th>Estado Final</th><th>Runtime</th><th>Modelo</th><th>CIFs</th><th>Sucesso</th><th>Inválidos</th><th>Erro</th><th>FTP 550</th><th>Tempo Médio</th></tr></thead><tbody id="historyTableBody"></tbody></table></div></div></div>
+      </section>
+
+      <section id="page-control" class="page">
+        <div class="hero"><div><h2>Live Control</h2><p>Controlo operacional limitado para pausar, retomar, parar com segurança, seleccionar runtime e parametrizar a execução do Agente IA.</p></div><span class="status warning">Modo Controlado</span></div>
+        <div class="warning-box">O Live Control envia pedidos auditáveis. A aplicação RPA deve consumir estes comandos de forma controlada antes de alterar o fluxo operacional.</div>
+        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Selecção De Runtime</h3><p class="card-subtitle">Escolha o runtime preferencial e quando a alteração deve ser aplicada pelo Agente IA.</p></div></div><div class="card-body grid cols-5">
+          <div class="field"><label for="paramRuntime">Runtime Preferencial</label><select id="paramRuntime"><option value="web" selected>Runtime Web / Copilot Chat Web</option><option value="api">Runtime API / Modelos LLM</option><option value="auto">Auto / Política Operacional</option></select></div>
+          <div class="field"><label for="paramRuntimeApply">Aplicar Alteração</label><select id="paramRuntimeApply"><option value="nextExecution">Próxima Execução</option><option value="afterCurrentCif">Após CIF Actual</option><option value="afterPause">Após Pausa Segura</option></select></div>
+          <div class="metric-line"><span>Runtime Actual</span><strong id="controlRuntimeActual">Web</strong></div>
+          <div class="metric-line"><span>Runtime Solicitado</span><strong id="controlRuntimeRequested">Web</strong></div>
+          <div style="display:flex; align-items:end;"><button class="button primary" id="applyRuntimeBtn" type="button">Aplicar Runtime</button></div>
+        </div></div>
+        <div class="grid cols-3 section-gap">
+          <div class="card"><div class="card-header"><div><h3 class="card-title">Estado Actual</h3><p class="card-subtitle">Leitura operacional do agente.</p></div></div><div class="card-body metric-list">
+            <div class="metric-line"><span>Execução</span><strong id="controlExecution">--</strong></div><div class="metric-line"><span>Estado</span><strong id="controlState">--</strong></div><div class="metric-line"><span>Runtime</span><strong id="controlRuntime">--</strong></div><div class="metric-line"><span>Modelo</span><strong id="controlModel">--</strong></div><div class="metric-line"><span>Último Comando</span><strong id="controlLastCommand">--</strong></div><div class="metric-line"><span>Alterado Por</span><strong id="controlChangedBy">--</strong></div>
+          </div></div>
+          <div class="card" style="grid-column: span 2;"><div class="card-header"><div><h3 class="card-title">Comandos Operacionais</h3><p class="card-subtitle">Pedidos gravados para execução controlada pelo Agente IA.</p></div></div><div class="card-body"><div class="command-grid">
+            <div class="command-card"><h4>Pausar Após CIF Actual</h4><p>Termina o CIF em curso e suspende a próxima iteração.</p><button class="button warning" data-command="PauseAfterCurrentCif">Pausar</button></div>
+            <div class="command-card"><h4>Retomar Execução</h4><p>Remove o estado de pausa e permite continuar o processamento.</p><button class="button success" data-command="ResumeExecution">Retomar</button></div>
+            <div class="command-card"><h4>Paragem Segura</h4><p>Finaliza sem interromper escrita de métricas.</p><button class="button danger" data-command="SafeStop">Parar</button></div>
+          </div></div></div>
+        </div>
+        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Parâmetros Ajustáveis</h3><p class="card-subtitle">Ajustes operacionais sem deploy. Parâmetros API aparecem apenas quando o runtime API estiver seleccionado.</p></div></div><div class="card-body grid cols-3">
+          <div class="field runtime-web-control"><label for="paramWebModel">Modelo Web</label><select id="paramWebModel"><option>Claude / Opus</option><option>GPT 5.5 Think Deeper</option><option>GPT 5.4 Think Deeper</option><option>GPT 5.2 Análise Aprofundada</option></select></div>
+          <div class="field runtime-api-control"><label for="paramApiModel">Modelo API</label><select id="paramApiModel"><option>Gemma 4 31B IT</option><option>Gemma 4 26B A4B IT</option><option>Gemini Flash</option><option>GPT 5.2 Global</option><option>Qwen 3.6 VL 8B</option></select></div>
+          <div class="field runtime-web-control"><label for="paramInterval">Intervalo Entre Requisições</label><select id="paramInterval"><option value="60">60 segundos</option><option value="90">90 segundos</option><option value="120">120 segundos</option></select></div>
+          <div class="field"><label for="paramGlobalErrors">Limite De Erros Globais</label><select id="paramGlobalErrors"><option value="2">2 erros</option><option value="3">3 erros</option><option value="5">5 erros</option></select></div>
+          <div class="field"><label for="paramLogLevel">Nível De Log</label><select id="paramLogLevel"><option>Information</option><option>Warning</option><option>Debug</option><option>Error</option></select></div>
+          <div class="field"><label for="paramNormalization">Normalização</label><select id="paramNormalization"><option value="true">Activa</option><option value="false">Inactiva</option></select></div>
+          <div class="field runtime-api-control"><label for="paramWorkerCount">Workers API</label><select id="paramWorkerCount"><option value="1">1 worker</option><option value="2">2 workers</option><option value="3" selected>3 workers</option><option value="4">4 workers</option><option value="6">6 workers</option></select></div>
+          <div class="field runtime-api-control"><label for="paramBatchSize">Máximo De CIFs Por Worker</label><input id="paramBatchSize" type="number" min="1" value="400" /></div>
+          <div class="field runtime-api-control"><label for="paramRpmLimit">RPM Máximo</label><input id="paramRpmLimit" type="number" min="1" value="13" /></div>
+          <div class="field runtime-api-control"><label for="paramRpdLimit">RPD Máximo</label><input id="paramRpdLimit" type="number" min="1" value="1400" /></div>
+          <div class="field runtime-api-control"><label for="paramTpmLimit">TPM Máximo</label><input id="paramTpmLimit" type="number" min="1" value="100000" /></div>
+          <div class="field runtime-api-control"><label for="paramTpdLimit">TPD Máximo</label><input id="paramTpdLimit" type="number" min="1" value="1000000" /></div>
+          <div class="field" style="grid-column: 1 / -1;"><label for="changeReason">Motivo Da Alteração</label><textarea id="changeReason" placeholder="Ex.: Reduzir timeouts após aumento de erros globais."></textarea></div>
+          <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px;"><button class="button" id="resetParamsBtn">Limpar</button><button class="button primary" id="saveParamsBtn">Enviar Alterações</button></div>
+        </div></div>
+        <div class="card section-gap runtime-api-control"><div class="card-header"><div><h3 class="card-title">Workers Activos</h3><p class="card-subtitle">Estado individual dos workers do Runtime API.</p></div></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Estado</th><th>Processando</th><th>Fila Local</th><th>Modelo</th><th>Último Heartbeat</th><th>Acção</th></tr></thead><tbody id="workersTableBody"></tbody></table></div></div></div>
+        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Auditoria De Comandos</h3><p class="card-subtitle">Histórico de comandos solicitados através do dashboard.</p></div></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Data/Hora</th><th>Comando</th><th>Estado</th><th>Solicitado Por</th><th>Motivo</th></tr></thead><tbody id="commandAuditBody"></tbody></table></div></div></div>
+      </section>
+
+      <section id="page-logs" class="page">
+        <div class="hero"><div><h2>Logs Em Tempo Real</h2><p>Disponível no dashboard local do RPA através de Server-Sent Events.</p></div><span class="status info">Local</span></div>
+        <div id="logs"></div>
+      </section>
     </main>
+  </div>
   <script src="/app.js"></script>
 </body>
 </html>
