@@ -104,6 +104,8 @@ function emptyLatest() {
 function normalizeLatest(raw) {
   const data = raw && raw.data ? raw.data : (raw || {});
   const latest = { ...emptyLatest(), ...data };
+  latest.rawPayload = data.rawPayload || raw?.rawPayload || raw || null;
+  latest.rawPayloadPreview = data.rawPayloadPreview || raw?.rawPayloadPreview || null;
   latest.idExecucao = pick(data, "idExecucao", "IdExecucao", "Id_Execucao") || latest.idExecucao;
   latest.estadoFinal = pick(data, "estadoFinal", "EstadoFinal", "estadoAtual", "EstadoAtual") || latest.estadoFinal;
   latest.runtimeActual = normalizeRuntime(pick(data, "runtimeActual", "RuntimeActual", "runtime") || latest.runtimeActual);
@@ -294,6 +296,12 @@ function renderRealtime() {
   setText("controlExecution", d.idExecucao || "--");
   setText("controlState", d.estadoFinal || "--");
   setText("controlModel", d.modeloSeleccionado || d.modeloActual || "--");
+  const rawEl = $("rawPayloadPreview");
+  if (rawEl) {
+    const rawText = d.rawPayloadPreview || JSON.stringify(d.rawPayload || d, null, 2);
+    rawEl.textContent = rawText || "Sem payload recebido.";
+  }
+  setText("rawPayloadStatus", d.receivedAt ? `Recebido ${formatDateTime(d.receivedAt)}` : "A aguardar");
   renderWorkers(d.workers || []);
   renderCharts(d);
 }
