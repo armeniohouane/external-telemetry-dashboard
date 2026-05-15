@@ -101,50 +101,15 @@ function emptyLatest() {
   };
 }
 
-function normalizeLatest(raw) {
-  const data = raw && raw.data ? raw.data : (raw || {});
-  const latest = { ...emptyLatest(), ...data };
-  latest.rawPayload = data.rawPayload || raw?.rawPayload || raw || null;
-  latest.rawPayloadPreview = data.rawPayloadPreview || raw?.rawPayloadPreview || null;
-  latest.idExecucao = pick(data, "idExecucao", "IdExecucao", "Id_Execucao") || latest.idExecucao;
-  latest.estadoFinal = pick(data, "estadoFinal", "EstadoFinal", "estadoAtual", "EstadoAtual") || latest.estadoFinal;
-  latest.runtimeActual = normalizeRuntime(pick(data, "runtimeActual", "RuntimeActual", "runtime") || latest.runtimeActual);
-  latest.runtimeSolicitado = normalizeRuntime(pick(data, "runtimeSolicitado", "RuntimeSolicitado") || latest.runtimeSolicitado);
-  latest.cifsRecebidos = getField(data, "cifsRecebidos", "CIFsRecebidos", latest.cifsRecebidos);
-  latest.cifsProcessados = getField(data, "cifsProcessados", "CIFsProcessados", latest.cifsProcessados);
-  latest.cifsSucesso = getField(data, "cifsSucesso", "CIFsSucesso", latest.cifsSucesso);
-  latest.cifsNaoEncontrado = getField(data, "cifsNaoEncontrado", "CIFsNaoEncontrado", latest.cifsNaoEncontrado);
-  latest.cifsInvalidos = getField(data, "cifsInvalidos", "CIFsInvalidos", latest.cifsInvalidos);
-  latest.cifsComErro = getField(data, "cifsComErro", "CIFsComErro", latest.cifsComErro);
-  latest.ficheirosRecebidos = getField(data, "ficheirosRecebidos", "FicheirosRecebidos", latest.ficheirosRecebidos);
-  latest.ficheirosAvaliados = getField(data, "ficheirosAvaliados", "FicheirosAvaliados", latest.ficheirosAvaliados);
-  latest.ficheirosFtp550 = getField(data, "ficheirosFtp550", "FicheirosFtp550", latest.ficheirosFtp550);
-  latest.uploads = getField(data, "uploads", "Uploads", latest.uploads);
-  latest.timeoutsAgente = getField(data, "timeoutsAgente", "TimeoutsAgente", latest.timeoutsAgente);
-  latest.normalizacoesSolicitadas = getField(data, "normalizacoesSolicitadas", "NormalizacoesSolicitadas", latest.normalizacoesSolicitadas);
-  latest.normalizacoesComSucesso = getField(data, "normalizacoesComSucesso", "NormalizacoesComSucesso", latest.normalizacoesComSucesso);
-  latest.tempoMedioPorCif = pick(data, "tempoMedioPorCif", "tempoMedioPorCIF", "TempoMedioPorCIF") ?? latest.tempoMedioPorCif;
-  latest.tempoMedioRespostaAgente = pick(data, "tempoMedioRespostaAgente", "TempoMedioRespostaAgente") ?? latest.tempoMedioRespostaAgente;
-  latest.modeloActual = pick(data, "modeloActual", "ModeloActual", "modeloAlvo", "ModeloAlvo", "modelo") || latest.modeloActual;
-  latest.modeloSeleccionado = pick(data, "modeloSeleccionado", "modeloSelecionado", "ModeloSelecionado") || latest.modeloSeleccionado;
-  latest.cifActual = pick(data, "cifActual", "cifAtual", "CIFAtual") || latest.cifActual;
-  latest.campoActual = pick(data, "campoActual", "campoAtual", "CampoAtual") || latest.campoActual;
-  latest.ficheiroActual = pick(data, "ficheiroActual", "ficheiroAtual", "FicheiroAtual") || latest.ficheiroActual;
-  latest.errosGlobaisConsecutivos = getField(data, "errosGlobaisConsecutivos", "ErrosConsecutivosGlobais", latest.errosGlobaisConsecutivos);
-  latest.tempoBackoffTotalMinutos = getField(data, "tempoBackoffTotalMinutos", "TempoBackoffTotalMinutos", getField(data, "backoffGlobalMinutos", "BackoffGlobalMinutos", latest.tempoBackoffTotalMinutos));
-  latest.ultimaRequisicao = pick(data, "ultimaRequisicao", "ultimaRequisicaoAgente", "UltimaRequisicaoAgente") || latest.ultimaRequisicao;
-  latest.proximaRequisicaoPermitida = pick(data, "proximaRequisicaoPermitida", "ProximaRequisicaoPermitida") || latest.proximaRequisicaoPermitida;
-  latest.heartbeat = pick(data, "heartbeat", "ultimoHeartbeat", "ultimaAtualizacao", "UltimaAtualizacao") || latest.heartbeat;
-  latest.errosPorTipo = pick(data, "errosPorTipo", "ErrosPorTipo", "errorsByType") || latest.errosPorTipo || {};
-  latest.timeline = Array.isArray(data.timeline) ? data.timeline : (Array.isArray(latest.timeline) ? latest.timeline : []);
-  latest.workers = Array.isArray(data.workers) ? data.workers : [];
-  return latest;
+function asRawTelemetry(raw) {
+  // Sem normalização no frontend: usa o payload exactamente como foi devolvido pela API.
+  // O objecto não é enriquecido, não recebe aliases e não é convertido para defaults.
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw;
+  return {};
 }
 
-function normalizeHistoryItem(x) {
-  const item = normalizeLatest(x);
-  item.data = pick(x, "data", "Data", "receivedAt", "heartbeat", "ultimaAtualizacao", "UltimaAtualizacao") || item.heartbeat;
-  return item;
+function asRawHistoryItem(x) {
+  return asRawTelemetry(x);
 }
 
 async function apiGet(path) {
@@ -166,10 +131,10 @@ async function apiPost(path, payload) {
 
 async function refreshLatest() {
   try {
-    State.latest = normalizeLatest(await apiGet("/api/telemetry/latest"));
+    State.latest = asRawTelemetry(await apiGet("/api/telemetry/latest"));
     setText("dataSourceSide", "REAL");
   } catch (e) {
-    State.latest = State.latest || emptyLatest();
+    if (!State.latest || String(e?.message || "").includes("404")) State.latest = null;
     setText("dataSourceSide", "SEM DADOS");
   }
   renderRealtime();
@@ -179,7 +144,7 @@ async function refreshHistory() {
   try {
     const data = await apiGet("/api/telemetry/history");
     const items = Array.isArray(data) ? data : (data.items || []);
-    State.history = items.map(normalizeHistoryItem).reverse();
+    State.history = items.map(asRawHistoryItem).reverse();
   } catch (e) {
     State.history = [];
   }
@@ -298,10 +263,9 @@ function renderRealtime() {
   setText("controlModel", d.modeloSeleccionado || d.modeloActual || "--");
   const rawEl = $("rawPayloadPreview");
   if (rawEl) {
-    const rawText = d.rawPayloadPreview || JSON.stringify(d.rawPayload || d, null, 2);
-    rawEl.textContent = rawText || "Sem payload recebido.";
+    rawEl.textContent = State.latest ? JSON.stringify(State.latest, null, 2) : "Sem payload recebido.";
   }
-  setText("rawPayloadStatus", d.receivedAt ? `Recebido ${formatDateTime(d.receivedAt)}` : "A aguardar");
+  setText("rawPayloadStatus", d.dataHoraOrigem ? `Origem ${formatDateTime(d.dataHoraOrigem)}` : (State.latest ? "Payload recebido" : "A aguardar"));
   renderWorkers(d.workers || []);
   renderCharts(d);
 }
@@ -347,7 +311,7 @@ function renderHistory() {
   const tbody = $("historyTableBody");
   if (tbody) {
     tbody.innerHTML = items.length
-      ? items.map(x => `<tr><td>${escapeHtml(x.idExecucao || "--")}</td><td>${formatDateTime(x.data || x.heartbeat)}</td><td>${escapeHtml(x.estadoFinal || "--")}</td><td>${runtimeDisplayName(x.runtimeActual)}</td><td>${escapeHtml(x.modeloSeleccionado || x.modeloActual || "--")}</td><td>${formatNumber(x.cifsProcessados)}</td><td>${formatNumber(x.cifsSucesso)}</td><td>${formatNumber(x.cifsInvalidos)}</td><td>${formatNumber(x.cifsComErro)}</td><td>${formatNumber(x.ficheirosFtp550)}</td><td>${formatDuration(x.tempoMedioPorCif)}</td></tr>`).join("")
+      ? items.map(x => `<tr><td>${escapeHtml(x.idExecucao || "--")}</td><td>${formatDateTime(x.dataHoraOrigem || x.heartbeat)}</td><td>${escapeHtml(x.estadoFinal || "--")}</td><td>${runtimeDisplayName(x.runtimeActual)}</td><td>${escapeHtml(x.modeloSeleccionado || x.modeloActual || "--")}</td><td>${formatNumber(x.cifsProcessados)}</td><td>${formatNumber(x.cifsSucesso)}</td><td>${formatNumber(x.cifsInvalidos)}</td><td>${formatNumber(x.cifsComErro)}</td><td>${formatNumber(x.ficheirosFtp550)}</td><td>${formatDuration(x.tempoMedioPorCif)}</td></tr>`).join("")
       : `<tr><td colspan="11">Sem histórico real recebido.</td></tr>`;
   }
   const labels = items.length ? items.map(x => String(x.idExecucao || "--").slice(-8)) : ["--"];
@@ -438,7 +402,7 @@ async function setupLogs() {
     events.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "telemetry" && message.latest) {
-        State.latest = normalizeLatest(message.latest);
+        State.latest = asRawTelemetry(message.latest);
         setText("dataSourceSide", "LIVE");
         renderRealtime();
         return;
