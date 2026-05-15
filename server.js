@@ -6,53 +6,20 @@ const path = require('path');
 
 const PORT = Number(process.env.PORT || 8080);
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const STORE_FILE = path.join(DATA_DIR, 'telemetry-store.json');
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 25 * 1024 * 1024);
-const MAX_HISTORY = Number(process.env.MAX_HISTORY || process.env.MAX_HISTORY_ITEMS || 1000);
+const MAX_HISTORY = Number(process.env.MAX_HISTORY || process.env.MAX_HISTORY_ITEMS || 300);
+const MAX_COMMANDS = Number(process.env.MAX_COMMANDS || 300);
+const MAX_LOGS = Number(process.env.MAX_LOGS || 300);
 
-// Urgente: por defeito a telemetria NAO bloqueia por chave. Se quiser voltar a exigir chave,
-// defina REQUIRE_TELEMETRY_KEY=true no Render.
+// Dashboard urgente: memória apenas. Não lê nem escreve telemetry-store.json.
+// Se o Render reiniciar/redeployar, o latest/histórico/comandos desaparecem, mas a recepção em tempo real não fica bloqueada por I/O.
 const REQUIRE_TELEMETRY_KEY = String(process.env.REQUIRE_TELEMETRY_KEY || 'false').toLowerCase() === 'true';
 const TELEMETRY_KEY = process.env.TELEMETRY_KEY || process.env.DASHBOARD_SHARED_SECRET || process.env.API_KEY || '';
 const LIVE_CONTROL_PASSWORD = process.env.LIVE_CONTROL_PASSWORD || 'Zeus';
 const REQUIRE_COMMAND_SECRET = String(process.env.REQUIRE_COMMAND_SECRET || 'false').toLowerCase() === 'true';
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
-
-let store = loadStore();
+const store = { latest: null, history: [], commands: [], logs: [] };
 const eventClients = new Set();
-
-function defaultStore() {
-  return { latest: null, history: [], commands: [], logs: [] };
-}
-
-function loadStore() {
-  try {
-    if (!fs.existsSync(STORE_FILE)) return defaultStore();
-    const parsed = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
-    return {
-      latest: parsed.latest || null,
-      history: Array.isArray(parsed.history) ? parsed.history.slice(-MAX_HISTORY) : [],
-      commands: Array.isArray(parsed.commands) ? parsed.commands.slice(-500) : [],
-      logs: Array.isArray(parsed.logs) ? parsed.logs.slice(-500) : []
-    };
-  } catch (error) {
-    console.warn('[WRN] Falha ao carregar store:', error.message);
-    return defaultStore();
-  }
-}
-
-function persistStore() {
-  try {
-    store.history = (store.history || []).slice(-MAX_HISTORY);
-    store.commands = (store.commands || []).slice(-500);
-    store.logs = (store.logs || []).slice(-500);
-    fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2));
-  } catch (error) {
-    console.warn('[WRN] Falha ao persistir store:', error.message);
-  }
-}
 
 function normalizePathname(value) {
   const clean = String(value || '/').replace(/\/+/g, '/');
@@ -66,7 +33,7 @@ function sendJson(res, statusCode, payload) {
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Telemetry-Key,X-Dashboard-Secret,X-Control-Password,X-Live-Control-Password',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Telemetry-Key,X-Dashboard-Secret,X-Control-Password,X-Live-Control-Password,X-RPA-Source,X-RPA-Instance',
     'X-Content-Type-Options': 'nosniff'
   });
   res.end(JSON.stringify(payload, null, 2));
@@ -85,6 +52,7 @@ function sendFile(res, filePath) {
     '.jpeg': 'image/jpeg',
     '.ico': 'image/x-icon'
   };
+
   fs.readFile(filePath, (err, data) => {
     if (err) return sendJson(res, 404, { ok: false, error: 'Not found' });
     res.writeHead(200, {
@@ -116,7 +84,7 @@ function readBody(req) {
 
 function safeParseJson(text) {
   try { return JSON.parse(text || '{}'); }
-  catch { return { rawBody: String(text || ''), parseWarning: 'JSON inválido recebido; guardado como texto bruto.' }; }
+  catch { return { rawBody: String(text || ''), parseWarning: 'JSON inválido recebido; mantido como texto bruto.' }; }
 }
 
 function text(value, fallback = null) {
@@ -145,7 +113,6 @@ function percent(part, total) {
 function normalizeRuntime(value) {
   const raw = String(value || 'web').toLowerCase();
   if (raw.includes('api')) return 'api';
-  if (raw.includes('auto')) return 'auto';
   return 'web';
 }
 
@@ -156,7 +123,8 @@ function mergeSources(payload) {
   const Data = payload && typeof payload.Data === 'object' ? payload.Data : {};
   const snapshot = payload && typeof payload.snapshot === 'object' ? payload.snapshot : {};
   const Snapshot = payload && typeof payload.Snapshot === 'object' ? payload.Snapshot : {};
-  return { ...metrics, ...Metrics, ...data, ...Data, ...snapshot, ...Snapshot, ...(payload || {}) };
+  const snapshotMonitor = payload && typeof payload.snapshotMonitor === 'object' ? payload.snapshotMonitor : {};
+  return { ...metrics, ...Metrics, ...data, ...Data, ...snapshot, ...Snapshot, ...snapshotMonitor, ...(payload || {}) };
 }
 
 function objectNumberMap(value) {
@@ -211,6 +179,7 @@ function normalizeTelemetry(payload, req) {
 
   const item = {
     receivedAt: now,
+    storageMode: 'memory-only',
     acceptedWithoutTelemetryAuth: !REQUIRE_TELEMETRY_KEY,
     receivedHeaders: {
       userAgent: req.headers['user-agent'] || null,
@@ -218,7 +187,9 @@ function normalizeTelemetry(payload, req) {
       contentLength: req.headers['content-length'] || null,
       xTelemetryKeyPresent: Boolean(req.headers['x-telemetry-key']),
       xDashboardSecretPresent: Boolean(req.headers['x-dashboard-secret']),
-      authorizationPresent: Boolean(req.headers.authorization)
+      authorizationPresent: Boolean(req.headers.authorization),
+      xRpaSource: req.headers['x-rpa-source'] || null,
+      xRpaInstance: req.headers['x-rpa-instance'] || null
     },
 
     instanceName: text(pick(source, 'instanceName', 'InstanceName'), 'RPA Clientes Irregulares'),
@@ -255,12 +226,11 @@ function normalizeTelemetry(payload, req) {
     intervaloMinimoEntreRequisicoesSegundos: number(pick(source, 'intervaloMinimoEntreRequisicoesSegundos', 'IntervaloMinimoEntreRequisicoesSegundos')),
     ultimaRequisicao: pick(source, 'ultimaRequisicao', 'UltimaRequisicao', 'ultimaRequisicaoAgente', 'UltimaRequisicaoAgente') || null,
     proximaRequisicaoPermitida: pick(source, 'proximaRequisicaoPermitida', 'ProximaRequisicaoPermitida') || null,
-    heartbeat: pick(source, 'heartbeat', 'Heartbeat', 'ultimoHeartbeat', 'UltimoHeartbeat') || now,
+    heartbeat: pick(source, 'heartbeat', 'Heartbeat', 'ultimoHeartbeat', 'UltimoHeartbeat', 'ultimaAtualizacao', 'UltimaAtualizacao') || now,
     ultimoEvento: text(pick(source, 'ultimoEvento', 'UltimoEvento'), null),
     categoriaUltimoErro: text(pick(source, 'categoriaUltimoErro', 'CategoriaUltimoErro', 'lastErrorCategory', 'LastErrorCategory'), null),
     ultimoErro: text(pick(source, 'ultimoErro', 'UltimoErro', 'lastError', 'LastError'), null),
 
-    // Agora propagado sem sanitizar para depuração operacional urgente.
     cifActual: text(pick(source, 'cifActual', 'cifAtual', 'CIFAtual', 'CIF_Atual'), null),
     ficheiroActual: text(pick(source, 'ficheiroActual', 'ficheiroAtual', 'FicheiroAtual', 'Ficheiro_Atual'), null),
     campoActual: text(pick(source, 'campoActual', 'campoAtual', 'CampoActual', 'CampoAtual', 'currentField', 'CurrentField'), null),
@@ -320,18 +290,18 @@ function isControlAuthorized(req, payload = {}) {
   ].some(v => String(v || '') === LIVE_CONTROL_PASSWORD);
 }
 
-function addLog(level, message, extra = {}) {
-  const item = { timestamp: new Date().toISOString(), level, message, ...extra };
-  store.logs.push(item);
-  store.logs = store.logs.slice(-500);
-  broadcast(item);
-}
-
-function broadcast(item) {
-  const data = `data: ${JSON.stringify(item)}\n\n`;
-  for (const res of eventClients) {
+function broadcast(event) {
+  const data = `data: ${JSON.stringify(event)}\n\n`;
+  for (const res of [...eventClients]) {
     try { res.write(data); } catch { eventClients.delete(res); }
   }
+}
+
+function addLog(level, message, extra = {}) {
+  const item = { type: 'log', timestamp: new Date().toISOString(), level, message, ...extra };
+  store.logs.push(item);
+  store.logs = store.logs.slice(-MAX_LOGS);
+  broadcast(item);
 }
 
 async function handleJson(req, res, handler) {
@@ -392,7 +362,9 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       status: 'online',
       service: 'external-telemetry-dashboard',
+      storageMode: 'memory-only',
       latestHeartbeat: store.latest?.heartbeat || null,
+      latestReceivedAt: store.latest?.receivedAt || null,
       historyItems: store.history.length,
       commandItems: store.commands.length,
       telemetryAuthRequired: REQUIRE_TELEMETRY_KEY,
@@ -401,23 +373,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && (pathname === '/api/telemetry/latest' || pathname === '/api/latest')) {
-    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.' });
+    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only' });
     return sendJson(res, 200, store.latest);
   }
 
   if (req.method === 'GET' && (pathname === '/api/debug/latest' || pathname === '/api/raw/latest')) {
-    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.' });
-    return sendJson(res, 200, { ok: true, receivedAt: store.latest.receivedAt, rawPayload: store.latest.rawPayload, normalized: store.latest });
+    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only' });
+    return sendJson(res, 200, { ok: true, storageMode: 'memory-only', receivedAt: store.latest.receivedAt, rawPayload: store.latest.rawPayload, normalized: store.latest });
   }
 
   if (req.method === 'GET' && pathname === '/api/state') {
-    return sendJson(res, 200, { ok: true, latest: store.latest, historyCount: store.history.length, commands: store.commands.slice(-50) });
+    return sendJson(res, 200, { ok: true, storageMode: 'memory-only', latest: store.latest, historyCount: store.history.length, commands: store.commands.slice(-50) });
   }
 
   if (req.method === 'GET' && (pathname === '/api/telemetry/history' || pathname === '/api/history')) {
     const take = Math.min(number(requestUrl.searchParams.get('take') || requestUrl.searchParams.get('limit'), MAX_HISTORY), MAX_HISTORY);
     const items = store.history.slice(-take);
-    if (pathname === '/api/history') return sendJson(res, 200, { ok: true, items: items.slice().reverse() });
+    if (pathname === '/api/history') return sendJson(res, 200, { ok: true, storageMode: 'memory-only', items: items.slice().reverse() });
     return sendJson(res, 200, items);
   }
 
@@ -426,7 +398,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/logs') {
-    const take = Math.min(number(requestUrl.searchParams.get('take'), 120), 500);
+    const take = Math.min(number(requestUrl.searchParams.get('take'), 120), MAX_LOGS);
     return sendJson(res, 200, store.logs.slice(-take));
   }
 
@@ -435,9 +407,11 @@ const server = http.createServer(async (req, res) => {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store',
       Connection: 'keep-alive',
-      'X-Content-Type-Options': 'nosniff'
+      'X-Content-Type-Options': 'nosniff',
+      'Access-Control-Allow-Origin': '*'
     });
     res.write(': connected\n\n');
+    if (store.latest) res.write(`data: ${JSON.stringify({ type: 'telemetry', latest: store.latest })}\n\n`);
     eventClients.add(res);
     req.on('close', () => eventClients.delete(res));
     return;
@@ -449,9 +423,10 @@ const server = http.createServer(async (req, res) => {
       const item = normalizeTelemetry(parsed, req);
       store.latest = item;
       store.history.push(item);
+      store.history = store.history.slice(-MAX_HISTORY);
       addLog('INF', `Telemetria recebida | Exec=${item.idExecucao || '-'} | Estado=${item.estadoFinal || '-'} | Progresso=${item.progressoPercentual || 0}%`);
-      persistStore();
-      return sendJson(res, 202, { ok: true, idExecucao: item.idExecucao, receivedAt: item.receivedAt, storedRawPayload: true });
+      broadcast({ type: 'telemetry', latest: item });
+      return sendJson(res, 202, { ok: true, storageMode: 'memory-only', idExecucao: item.idExecucao, receivedAt: item.receivedAt, shownInDashboard: true });
     });
   }
 
@@ -461,8 +436,9 @@ const server = http.createServer(async (req, res) => {
       if (!isControlAuthorized(req, parsed || {})) return sendJson(res, 403, { ok: false, error: 'Invalid live control password.' });
       const item = createCommand(parsed || {});
       store.commands.push(item);
+      store.commands = store.commands.slice(-MAX_COMMANDS);
       addLog('INF', `Comando registado | ${item.command}`);
-      persistStore();
+      broadcast({ type: 'command', command: item });
       return sendJson(res, 202, item);
     });
   }
@@ -474,7 +450,7 @@ const server = http.createServer(async (req, res) => {
       const item = acknowledgeCommand(commandId, parsed || {});
       if (!item) return sendJson(res, 404, { ok: false, error: 'Command not found.' });
       addLog('INF', `Comando actualizado | ${item.command} | ${item.status}`);
-      persistStore();
+      broadcast({ type: 'command', command: item });
       return sendJson(res, 200, { ok: true, command: item });
     });
   }
@@ -485,6 +461,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[INF] Dashboard externo iniciado em http://0.0.0.0:${PORT}`);
-  console.log(`[INF] Telemetria: POST /api/telemetry | AuthObrigatoria=${REQUIRE_TELEMETRY_KEY}`);
+  console.log(`[INF] StorageMode=memory-only | POST /api/telemetry | AuthObrigatoria=${REQUIRE_TELEMETRY_KEY}`);
   console.log('[INF] Live Control: POST /api/commands | Senha via payload/header');
 });
