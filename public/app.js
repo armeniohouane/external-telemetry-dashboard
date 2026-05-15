@@ -1,7 +1,7 @@
 const AppConfig = {
   apiBase: "",
   isLocal: false,
-  autoRefreshMs: 10000
+  autoRefreshMs: 5000
 };
 
 const State = {
@@ -410,7 +410,7 @@ function bindEvents() {
   }));
   $("refreshNowBtn")?.addEventListener("click", () => { refreshLatest(); refreshHistory(); refreshCommands(); });
   $("runtimeViewSelector")?.addEventListener("change", e => { State.viewRuntime = normalizeRuntime(e.target.value); localStorage.setItem("ciViewRuntime", State.viewRuntime); renderRealtime(); });
-  $("paramRuntime")?.addEventListener("change", e => { State.selectedRuntime = "web"; localStorage.setItem("ciSelectedRuntime", State.selectedRuntime); applyRuntimeView(State.latest || emptyLatest()); });
+  $("paramRuntime")?.addEventListener("change", e => { State.selectedRuntime = normalizeRuntime(e.target.value); localStorage.setItem("ciSelectedRuntime", State.selectedRuntime); applyRuntimeView(State.latest || emptyLatest()); });
   $("applyRuntimeBtn")?.addEventListener("click", () => sendCommand("ApplyRuntimeSelection", { runtimeApplyMode: $("paramRuntimeApply")?.value || "nextExecution" }));
   $("saveParamsBtn")?.addEventListener("click", () => sendCommand("UpdateRuntimeParameters"));
   $("resetParamsBtn")?.addEventListener("click", () => { if ($("changeReason")) $("changeReason").value = ""; });
@@ -419,8 +419,8 @@ function bindEvents() {
 }
 
 async function setupLogs() {
-  if (!AppConfig.isLocal || !$("logs")) return;
   function addLog(item) {
+    if (!$("logs")) return;
     const div = document.createElement("div");
     const level = item.level || item.Level || "INF";
     div.className = `log-line log-${level}`;
@@ -428,8 +428,29 @@ async function setupLogs() {
     $("logs").appendChild(div);
     $("logs").scrollTop = $("logs").scrollHeight;
   }
-  try { (await apiGet("/api/logs?take=120")).forEach(addLog); } catch {}
-  try { const events = new EventSource(url("/api/events")); events.onmessage = (event) => addLog(JSON.parse(event.data)); } catch {}
+
+  try {
+    if ($("logs")) (await apiGet("/api/logs?take=120")).forEach(addLog);
+  } catch {}
+
+  try {
+    const events = new EventSource(url("/api/events"));
+    events.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === "telemetry" && message.latest) {
+        State.latest = normalizeLatest(message.latest);
+        setText("dataSourceSide", "LIVE");
+        renderRealtime();
+        return;
+      }
+      if (message.type === "command") {
+        refreshCommands();
+        return;
+      }
+      addLog(message);
+    };
+    events.onerror = () => setText("dataSourceSide", "POLLING");
+  } catch {}
 }
 
 bindEvents();
