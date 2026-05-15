@@ -9,6 +9,7 @@ const State = {
   selectedRuntime: "web",
   viewRuntime: localStorage.getItem("ciViewRuntime") || "web",
   latest: null,
+  latestReceivedAt: null,
   history: [],
   commandAudit: [],
   charts: {}
@@ -27,19 +28,26 @@ const colors = {
   grey: "#9ca3af"
 };
 
+const PROGRESS_WINDOW_MS = 60 * 60 * 1000;
+const ACTIVE_TELEMETRY_MAX_AGE_MS = 45 * 1000;
+
 function $(id) { return document.getElementById(id); }
 function setText(id, value) { const el = $(id); if (el) el.textContent = value ?? "--"; }
 function url(path) { return `${AppConfig.apiBase}${path}`; }
 function pick(obj, ...keys) { for (const k of keys) { if (obj && obj[k] !== undefined && obj[k] !== null) return obj[k]; } return undefined; }
 function n(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; }
 function formatNumber(value) { return new Intl.NumberFormat("pt-PT").format(n(value)); }
+function formatInteger(value) { return new Intl.NumberFormat("pt-PT").format(Math.round(n(value))); }
+function formatDecimal(value, maxDecimals = 2) { return new Intl.NumberFormat("pt-PT", { minimumFractionDigits: 0, maximumFractionDigits: maxDecimals }).format(n(value)); }
 function formatPercent(value) { return `${Math.round(n(value))}%`; }
 function formatDateTime(value) { if (!value) return "--"; const d = new Date(value); if (Number.isNaN(d.getTime())) return "--"; return new Intl.DateTimeFormat("pt-PT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(d); }
 function formatTime(value) { if (!value) return "--:--:--"; const d = new Date(value); if (Number.isNaN(d.getTime())) return "--:--:--"; return new Intl.DateTimeFormat("pt-PT", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(d); }
 function formatDuration(seconds) { const v = n(seconds); if (v <= 0) return "0s"; if (v < 60) return `${Math.round(v)}s`; return `${Math.floor(v / 60)}m ${Math.round(v % 60)}s`; }
 function ratio(part, total) { return !n(total) ? 0 : (n(part) / n(total)) * 100; }
 function escapeHtml(value) { return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;"); }
-function isHeartbeatFresh(value) { if (!value) return false; const d = new Date(value); return !Number.isNaN(d.getTime()) && Date.now() - d.getTime() < 45000; }
+function isDateFresh(value, maxAgeMs = ACTIVE_TELEMETRY_MAX_AGE_MS) { if (!value) return false; const d = new Date(value); return !Number.isNaN(d.getTime()) && Date.now() - d.getTime() < maxAgeMs; }
+function isTelemetryActive() { return Boolean(State.latest) && isDateFresh(State.latestReceivedAt, ACTIVE_TELEMETRY_MAX_AGE_MS); }
+function isWithinProgressWindow(value) { if (!value) return false; const d = new Date(value); if (Number.isNaN(d.getTime())) return false; const age = Date.now() - d.getTime(); return age >= -60 * 1000 && age <= PROGRESS_WINDOW_MS; }
 function normalizeRuntime(value) { const runtime = String(value || "web").toLowerCase(); if (runtime.includes("api")) return "api"; return "web"; }
 function runtimeDisplayName(value) { return normalizeRuntime(value) === "api" ? "API" : "Web"; }
 function getField(data, camel, pascal, fallback = 0) { return pick(data, camel, pascal) ?? fallback; }
@@ -143,10 +151,14 @@ function asRawHistoryItem(x) {
   return asRawTelemetry(x);
 }
 
+async function apiGetResponse(path) {
+  const response = await fetch(url(path), { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return { response, body: await response.json() };
+}
+
 async function apiGet(path) {
-  const r = await fetch(url(path), { cache: "no-store" });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
+  return (await apiGetResponse(path)).body;
 }
 
 async function apiPost(path, payload) {
@@ -162,11 +174,16 @@ async function apiPost(path, payload) {
 
 async function refreshLatest() {
   try {
-    State.latest = asRawTelemetry(await apiGet("/api/telemetry/latest"));
+    const result = await apiGetResponse("/api/telemetry/latest");
+    State.latest = asRawTelemetry(result.body);
+    State.latestReceivedAt = result.response.headers.get("X-Latest-Received-At") || State.latestReceivedAt;
     appendHistoryItem(State.latest);
-    setText("dataSourceSide", "REAL");
+    setText("dataSourceSide", isTelemetryActive() ? "REAL" : "STALE");
   } catch (e) {
-    if (!State.latest || String(e?.message || "").includes("404")) State.latest = null;
+    if (!State.latest || String(e?.message || "").includes("404")) {
+      State.latest = null;
+      State.latestReceivedAt = null;
+    }
     setText("dataSourceSide", "SEM DADOS");
   }
   renderRealtime();
@@ -202,7 +219,16 @@ function chart(id, options) {
 }
 
 function baseChartOptions() {
-  return { chart: { toolbar: { show: false }, fontFamily: "Inter, Segoe UI, Arial" }, dataLabels: { enabled: false }, grid: { borderColor: colors.grid }, xaxis: { labels: { style: { colors: colors.muted } } }, yaxis: { labels: { style: { colors: colors.muted } } }, legend: { labels: { colors: colors.text } }, stroke: { curve: "smooth", width: 3 } };
+  return {
+    chart: { toolbar: { show: false }, fontFamily: "Inter, Segoe UI, Arial" },
+    dataLabels: { enabled: false },
+    grid: { borderColor: colors.grid },
+    xaxis: { labels: { style: { colors: colors.muted } } },
+    yaxis: { labels: { style: { colors: colors.muted }, formatter: value => formatDecimal(value, 2) } },
+    legend: { labels: { colors: colors.text } },
+    stroke: { curve: "smooth", width: 3 },
+    tooltip: { theme: "light", y: { formatter: value => formatDecimal(value, 2) } }
+  };
 }
 
 function effectiveRuntime(data = State.latest || emptyLatest()) {
@@ -229,8 +255,8 @@ function renderRealtime() {
   applyRuntimeView(d);
   const progress = ratio(d.cifsProcessados, d.cifsRecebidos);
   const successRate = ratio(d.cifsSucesso, d.cifsProcessados);
-  const isFresh = isHeartbeatFresh(d.heartbeat);
-  setText("agentHealthText", isFresh ? "Activo" : "Sem heartbeat");
+  const isFresh = isTelemetryActive();
+  setText("agentHealthText", isFresh ? "Activo" : (State.latest ? "Sem telemetria recente" : "Sem telemetria"));
   if ($("agentHealthDot")) $("agentHealthDot").className = `dot ${isFresh ? "" : "danger"}`;
   if ($("heartbeatDot")) $("heartbeatDot").className = `dot ${isFresh ? "" : "danger"}`;
   setText("executionStatus", d.estadoFinal || "--");
@@ -244,6 +270,7 @@ function renderRealtime() {
   setText("mProgressPercent", formatPercent(progress));
   setText("currentCif", d.cifActual || "Sanitizado");
   setText("currentField", d.campoActual || "--");
+  setText("currentFilesProcessed", formatNumber(d.uploads));
   setText("currentFile", "Oculto no dashboard");
   setText("kpiProcessed", formatNumber(d.cifsProcessados));
   setText("kpiProcessedMeta", `${formatPercent(progress)} da fila`);
@@ -305,8 +332,8 @@ function renderRealtime() {
 
 function buildTimeline(d) {
   const historyPoints = (State.history || [])
-    .filter(isLast24h)
-    .filter(x => historyDate(x) && (metric(x, "cifsProcessados", "CIFs_Processados") > 0 || metric(x, "cifsRecebidos", "CIFs_Recebidos") > 0))
+    .filter(x => isWithinProgressWindow(historyDate(x)))
+    .filter(x => metric(x, "cifsProcessados", "CIFs_Processados") > 0 || metric(x, "cifsRecebidos", "CIFs_Recebidos") > 0)
     .sort((a, b) => historyMs(a) - historyMs(b))
     .slice(-300)
     .map(x => ({
@@ -320,25 +347,102 @@ function buildTimeline(d) {
     }));
   if (historyPoints.length) return historyPoints;
 
-  if (Array.isArray(d.timeline) && d.timeline.length) return d.timeline.slice(-12);
-  if (d.heartbeat || n(d.cifsProcessados) > 0) {
-    return [{ label: formatTime(d.heartbeat || new Date()), timestamp: d.heartbeat || new Date().toISOString(), processed: n(d.cifsProcessados), success: n(d.cifsSucesso), notFound: n(d.cifsNaoEncontrado), errors: n(d.cifsComErro), progress: ratio(d.cifsProcessados, d.cifsRecebidos) }];
+  if (Array.isArray(d.timeline) && d.timeline.length) {
+    const payloadPoints = d.timeline
+      .map(x => ({
+        label: x.label || formatTime(x.timestamp || x.data || x.dataHoraOrigem),
+        timestamp: x.timestamp || x.data || x.dataHoraOrigem || null,
+        processed: n(x.processed ?? x.cifsProcessados),
+        success: n(x.success ?? x.cifsSucesso),
+        notFound: n(x.notFound ?? x.cifsNaoEncontrado),
+        errors: n(x.errors ?? x.cifsComErro),
+        progress: n(x.progress ?? ratio(x.cifsProcessados, x.cifsRecebidos))
+      }))
+      .filter(x => x.timestamp && isWithinProgressWindow(x.timestamp))
+      .slice(-300);
+    if (payloadPoints.length) return payloadPoints;
+  }
+
+  const currentPointTime = d.heartbeat || State.latestReceivedAt;
+  if (isWithinProgressWindow(currentPointTime)) {
+    return [{ label: formatTime(currentPointTime), timestamp: currentPointTime, processed: n(d.cifsProcessados), success: n(d.cifsSucesso), notFound: n(d.cifsNaoEncontrado), errors: n(d.cifsComErro), progress: ratio(d.cifsProcessados, d.cifsRecebidos) }];
   }
   return [{ label: "--", processed: 0, success: 0, notFound: 0, errors: 0, progress: 0 }];
 }
 
+
 function renderCharts(d) {
   const timeline = buildTimeline(d);
   const labels = timeline.map(x => x.label || formatTime(x.timestamp || x.data));
-  setText("progressChartLastPoint", labels[labels.length - 1] || "--");
-  chart("chartProgressDynamic", { ...baseChartOptions(), chart: { ...baseChartOptions().chart, type: "area", height: 190, foreColor: "#fff" }, colors: [colors.pink], xaxis: { categories: labels, labels: { style: { colors: "#fff" } } }, yaxis: { max: 100, labels: { style: { colors: "#fff" } } }, series: [{ name: "Progresso", data: timeline.map(x => n(x.progress)) }], fill: { opacity: 0.25 }, grid: { borderColor: "rgba(255,255,255,.12)" } });
-  chart("chartRealtimeLine", { ...baseChartOptions(), chart: { ...baseChartOptions().chart, type: "line", height: 310 }, colors: [colors.blue, colors.green, colors.amber, colors.red], xaxis: { categories: labels }, series: [ { name: "Processados", data: timeline.map(x => n(x.processed)) }, { name: "Sucesso", data: timeline.map(x => n(x.success)) }, { name: "Não Encontrado", data: timeline.map(x => n(x.notFound)) }, { name: "Erros", data: timeline.map(x => n(x.errors)) } ] });
-  chart("chartResultDonut", { chart: { type: "donut", height: 270, fontFamily: "Inter, Segoe UI, Arial" }, labels: ["Sucesso", "Não Encontrado", "Inválido", "Erro"], colors: [colors.green, colors.amber, colors.blue, colors.red], series: [n(d.cifsSucesso), n(d.cifsNaoEncontrado), n(d.cifsInvalidos), n(d.cifsComErro)], legend: { position: "bottom" }, dataLabels: { enabled: false }, noData: { text: "Sem dados" } });
+  const progressSeries = timeline.map(x => Math.round(n(x.progress)));
+  setText("progressChartLastPoint", labels[labels.length - 1] ? `Últimos 60 min · ${labels[labels.length - 1]}` : "Últimos 60 min");
+
+  chart("chartProgressDynamic", {
+    ...baseChartOptions(),
+    chart: { ...baseChartOptions().chart, type: "area", height: 190, foreColor: "#fff" },
+    colors: [colors.pink],
+    xaxis: { categories: labels, labels: { style: { colors: "#fff" } } },
+    yaxis: { min: 0, max: 100, labels: { style: { colors: "#fff" }, formatter: value => formatInteger(value) } },
+    series: [{ name: "Progresso", data: progressSeries }],
+    fill: { opacity: 0.25 },
+    grid: { borderColor: "rgba(255,255,255,.12)" },
+    tooltip: {
+      theme: "light",
+      custom: ({ dataPointIndex }) => {
+        const point = timeline[dataPointIndex] || {};
+        const label = labels[dataPointIndex] || "--";
+        return `<div class="chart-tooltip"><div class="chart-tooltip-title">${escapeHtml(label)}</div><div class="chart-tooltip-row"><span>Progresso</span><strong>${formatDecimal(point.progress, 2)}%</strong></div><div class="chart-tooltip-row"><span>CIFs processados</span><strong>${formatInteger(point.processed)}</strong></div></div>`;
+      }
+    }
+  });
+
+  chart("chartRealtimeLine", {
+    ...baseChartOptions(),
+    chart: { ...baseChartOptions().chart, type: "line", height: 310 },
+    colors: [colors.blue, colors.green, colors.amber, colors.red],
+    xaxis: { categories: labels },
+    yaxis: { labels: { style: { colors: colors.muted }, formatter: value => formatInteger(value) } },
+    tooltip: { theme: "light", y: { formatter: value => formatInteger(value) } },
+    series: [
+      { name: "Processados", data: timeline.map(x => Math.round(n(x.processed))) },
+      { name: "Sucesso", data: timeline.map(x => Math.round(n(x.success))) },
+      { name: "Não Encontrado", data: timeline.map(x => Math.round(n(x.notFound))) },
+      { name: "Erros", data: timeline.map(x => Math.round(n(x.errors))) }
+    ]
+  });
+
+  const resultSeries = [n(d.cifsSucesso), n(d.cifsNaoEncontrado), n(d.cifsInvalidos), n(d.cifsComErro)].map(x => Math.round(x));
+  const resultTotal = resultSeries.reduce((a, x) => a + x, 0);
+  chart("chartResultDonut", {
+    chart: { type: "donut", height: 270, fontFamily: "Inter, Segoe UI, Arial" },
+    labels: ["Sucesso", "Não Encontrado", "Inválido", "Erro"],
+    colors: [colors.green, colors.amber, colors.blue, colors.red],
+    series: resultSeries,
+    legend: { position: "bottom" },
+    dataLabels: { enabled: false },
+    tooltip: { theme: "light", y: { formatter: value => formatInteger(value) } },
+    plotOptions: {
+      pie: {
+        donut: {
+          size: "68%",
+          labels: {
+            show: true,
+            name: { show: true, color: colors.muted, fontSize: "12px", fontWeight: 800 },
+            value: { show: true, color: colors.text, fontSize: "26px", fontWeight: 930, formatter: value => formatInteger(value) },
+            total: { show: true, showAlways: true, label: "Total", color: colors.muted, fontSize: "12px", fontWeight: 850, formatter: () => formatInteger(resultTotal) }
+          }
+        }
+      }
+    },
+    noData: { text: "Sem dados" }
+  });
+
   const errorEntries = Object.entries(d.errosPorTipo || {});
   const errorLabels = errorEntries.length ? errorEntries.map(([k]) => k) : ["Sem erros"];
-  const errorValues = errorEntries.length ? errorEntries.map(([, v]) => n(v)) : [0];
-  chart("chartErrorTypes", { ...baseChartOptions(), chart: { ...baseChartOptions().chart, type: "bar", height: 270 }, plotOptions: { bar: { horizontal: true, borderRadius: 6 } }, colors: [colors.red], xaxis: { categories: errorLabels }, series: [{ name: "Ocorrências", data: errorValues }] });
+  const errorValues = errorEntries.length ? errorEntries.map(([, v]) => Math.round(n(v))) : [0];
+  chart("chartErrorTypes", { ...baseChartOptions(), chart: { ...baseChartOptions().chart, type: "bar", height: 270 }, plotOptions: { bar: { horizontal: true, borderRadius: 6 } }, colors: [colors.red], xaxis: { categories: errorLabels }, yaxis: { labels: { style: { colors: colors.muted }, formatter: value => formatInteger(value) } }, tooltip: { theme: "light", y: { formatter: value => formatInteger(value) } }, series: [{ name: "Ocorrências", data: errorValues }] });
 }
+
 
 function renderWorkers(workers) {
   const tbody = $("workersTableBody");
@@ -457,8 +561,9 @@ async function setupLogs() {
       const message = JSON.parse(event.data);
       if (message.type === "telemetry" && message.latest) {
         State.latest = asRawTelemetry(message.latest);
+        State.latestReceivedAt = message.receivedAt || new Date().toISOString();
         appendHistoryItem(State.latest);
-        setText("dataSourceSide", "LIVE");
+        setText("dataSourceSide", isTelemetryActive() ? "LIVE" : "STALE");
         renderRealtime();
         if (State.activePage === "history") renderHistory();
         return;
