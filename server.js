@@ -18,7 +18,7 @@ const TELEMETRY_KEY = process.env.TELEMETRY_KEY || process.env.DASHBOARD_SHARED_
 const LIVE_CONTROL_PASSWORD = process.env.LIVE_CONTROL_PASSWORD || 'Zeus';
 const REQUIRE_COMMAND_SECRET = String(process.env.REQUIRE_COMMAND_SECRET || 'false').toLowerCase() === 'true';
 
-const store = { latest: null, history: [], commands: [], logs: [] };
+const store = { latest: null, latestReceivedAt: null, latestRawBody: null, history: [], commands: [], logs: [] };
 const eventClients = new Set();
 
 function normalizePathname(value) {
@@ -104,174 +104,10 @@ function pick(obj, ...keys) {
   return undefined;
 }
 
-function percent(part, total) {
-  const p = number(part);
-  const t = number(total);
-  return t <= 0 ? 0 : Math.round((p / t) * 1000) / 10;
-}
-
 function normalizeRuntime(value) {
   const raw = String(value || 'web').toLowerCase();
   if (raw.includes('api')) return 'api';
   return 'web';
-}
-
-function mergeSources(payload) {
-  const metrics = payload && typeof payload.metrics === 'object' ? payload.metrics : {};
-  const Metrics = payload && typeof payload.Metrics === 'object' ? payload.Metrics : {};
-  const data = payload && typeof payload.data === 'object' ? payload.data : {};
-  const Data = payload && typeof payload.Data === 'object' ? payload.Data : {};
-  const snapshot = payload && typeof payload.snapshot === 'object' ? payload.snapshot : {};
-  const Snapshot = payload && typeof payload.Snapshot === 'object' ? payload.Snapshot : {};
-  const snapshotMonitor = payload && typeof payload.snapshotMonitor === 'object' ? payload.snapshotMonitor : {};
-  return { ...metrics, ...Metrics, ...data, ...Data, ...snapshot, ...Snapshot, ...snapshotMonitor, ...(payload || {}) };
-}
-
-function objectNumberMap(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const result = {};
-  for (const [key, raw] of Object.entries(value)) result[key] = number(raw);
-  return result;
-}
-
-function normalizeWorkers(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((worker, index) => ({
-    id: text(pick(worker, 'id', 'Id', 'workerId', 'WorkerId'), `Worker-${index + 1}`),
-    estado: text(pick(worker, 'estado', 'Estado', 'status', 'Status'), 'Desconhecido'),
-    processando: text(pick(worker, 'processando', 'Processando', 'campoAtual', 'CampoAtual', 'campoActual', 'CampoActual', 'currentField', 'CurrentField'), '--'),
-    filaLocal: number(pick(worker, 'filaLocal', 'FilaLocal', 'localQueue', 'LocalQueue')),
-    modelo: text(pick(worker, 'modelo', 'Modelo', 'model', 'Model'), null),
-    ultimoHeartbeat: pick(worker, 'ultimoHeartbeat', 'UltimoHeartbeat', 'heartbeat', 'Heartbeat') || null,
-    raw: worker
-  }));
-}
-
-function normalizeTimeline(value, source) {
-  if (Array.isArray(value) && value.length) return value;
-  const now = new Date().toISOString();
-  return [{
-    label: new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }),
-    timestamp: now,
-    processed: number(pick(source, 'cifsProcessados', 'CifsProcessados', 'CIFsProcessados', 'CIFs_Processados')),
-    success: number(pick(source, 'cifsSucesso', 'CifsSucesso', 'CIFsSucesso', 'CIFs_Sucesso')),
-    notFound: number(pick(source, 'cifsNaoEncontrado', 'CifsNaoEncontrado', 'CIFsNaoEncontrado', 'CIFs_Nao_Encontrado')),
-    errors: number(pick(source, 'cifsComErro', 'CifsComErro', 'CIFsComErro', 'CIFs_Com_Erro')),
-    progress: percent(
-      pick(source, 'cifsProcessados', 'CifsProcessados', 'CIFsProcessados', 'CIFs_Processados'),
-      pick(source, 'cifsRecebidos', 'CifsRecebidos', 'CIFsRecebidos', 'CIFs_Recebidos')
-    )
-  }];
-}
-
-function normalizeTelemetry(payload, req) {
-  const now = new Date().toISOString();
-  const source = mergeSources(payload && typeof payload === 'object' ? payload : {});
-
-  const cifsRecebidos = number(pick(source, 'cifsRecebidos', 'CifsRecebidos', 'CIFsRecebidos', 'CIFs_Recebidos'));
-  const cifsProcessados = number(pick(source, 'cifsProcessados', 'CifsProcessados', 'CIFsProcessados', 'CIFs_Processados'));
-  const cifsSucesso = number(pick(source, 'cifsSucesso', 'CifsSucesso', 'CIFsSucesso', 'CIFs_Sucesso'));
-  const cifsNaoEncontrado = number(pick(source, 'cifsNaoEncontrado', 'CifsNaoEncontrado', 'CIFsNaoEncontrado', 'CIFs_Nao_Encontrado'));
-  const cifsInvalidos = number(pick(source, 'cifsInvalidos', 'CifsInvalidos', 'CIFsInvalidos', 'CIFs_Invalidos'));
-  const cifsComErro = number(pick(source, 'cifsComErro', 'CifsComErro', 'CIFsComErro', 'CIFs_Com_Erro'));
-  const ficheirosAvaliados = number(pick(source, 'ficheirosAvaliados', 'FicheirosAvaliados', 'Ficheiros_Avaliados'));
-  const ficheirosRecebidos = number(pick(source, 'ficheirosRecebidos', 'FicheirosRecebidos', 'Ficheiros_Recebidos'), ficheirosAvaliados);
-
-  const item = {
-    receivedAt: now,
-    storageMode: 'memory-only',
-    acceptedWithoutTelemetryAuth: !REQUIRE_TELEMETRY_KEY,
-    receivedHeaders: {
-      userAgent: req.headers['user-agent'] || null,
-      contentType: req.headers['content-type'] || null,
-      contentLength: req.headers['content-length'] || null,
-      xTelemetryKeyPresent: Boolean(req.headers['x-telemetry-key']),
-      xDashboardSecretPresent: Boolean(req.headers['x-dashboard-secret']),
-      authorizationPresent: Boolean(req.headers.authorization),
-      xRpaSource: req.headers['x-rpa-source'] || null,
-      xRpaInstance: req.headers['x-rpa-instance'] || null
-    },
-
-    instanceName: text(pick(source, 'instanceName', 'InstanceName'), 'RPA Clientes Irregulares'),
-    idExecucao: text(pick(source, 'idExecucao', 'IdExecucao', 'Id_Execucao', 'currentExecutionId', 'CurrentExecutionId'), now.replace(/[-:TZ.]/g, '').slice(0, 14)),
-    data: pick(source, 'data', 'Data', 'dataHoraOrigem', 'DataHoraOrigem', 'sentAt', 'SentAt') || now,
-    estadoFinal: text(pick(source, 'estadoFinal', 'EstadoFinal', 'Estado_Final', 'estadoAtual', 'EstadoAtual', 'estado', 'Estado', 'status', 'Status'), 'Recebido'),
-    runtimeActual: normalizeRuntime(pick(source, 'runtimeActual', 'RuntimeActual', 'Runtime_Actual', 'runtime', 'Runtime')),
-    runtimeSolicitado: normalizeRuntime(pick(source, 'runtimeSolicitado', 'RuntimeSolicitado', 'Runtime_Solicitado', 'runtime', 'Runtime')),
-    runtimeModo: text(pick(source, 'runtimeModo', 'RuntimeModo', 'modo', 'Modo'), null),
-
-    cifsRecebidos,
-    cifsProcessados,
-    cifsSucesso,
-    cifsNaoEncontrado,
-    cifsInvalidos,
-    cifsComErro,
-    ficheirosRecebidos,
-    ficheirosAvaliados,
-    ficheirosFtp550: number(pick(source, 'ficheirosFtp550', 'FicheirosFtp550', 'Ficheiros_FTP_550')),
-    uploads: number(pick(source, 'uploads', 'Uploads', 'Uploads_Direct_Line', 'requestsGemini', 'RequestsGemini')),
-    timeoutsAgente: number(pick(source, 'timeoutsAgente', 'TimeoutsAgente', 'Timeouts_Agente')),
-    errosDirectLine: number(pick(source, 'errosDirectLine', 'ErrosDirectLine', 'Erros_Direct_Line', 'errosApi', 'ErrosApi')),
-    normalizacoesSolicitadas: number(pick(source, 'normalizacoesSolicitadas', 'NormalizacoesSolicitadas', 'Normalizacoes_Solicitadas')),
-    normalizacoesComSucesso: number(pick(source, 'normalizacoesComSucesso', 'NormalizacoesComSucesso', 'Normalizacoes_Com_Sucesso')),
-    tempoMedioPorCif: number(pick(source, 'tempoMedioPorCif', 'TempoMedioPorCif', 'tempoMedioPorCIF', 'TempoMedioPorCIF', 'Tempo_Medio_Por_CIF')),
-    tempoMedioRespostaAgente: number(pick(source, 'tempoMedioRespostaAgente', 'TempoMedioRespostaAgente', 'Tempo_Medio_Resposta_Agente')),
-    tempoBackoffTotalMinutos: number(pick(source, 'tempoBackoffTotalMinutos', 'TempoBackoffTotalMinutos', 'backoffGlobalMinutos', 'BackoffGlobalMinutos')),
-
-    modeloActual: text(pick(source, 'modeloActual', 'ModeloActual', 'modeloAlvo', 'ModeloAlvo', 'modelo', 'Modelo'), null),
-    modeloSeleccionado: text(pick(source, 'modeloSeleccionado', 'ModeloSeleccionado', 'modeloSelecionado', 'ModeloSelecionado'), null),
-    fallbackCount: number(pick(source, 'fallbackCount', 'FallbackCount', 'fallbacks', 'Fallbacks')),
-    errosGlobaisConsecutivos: number(pick(source, 'errosGlobaisConsecutivos', 'ErrosGlobaisConsecutivos', 'errosConsecutivosGlobais', 'ErrosConsecutivosGlobais')),
-    limiteErrosGlobais: number(pick(source, 'limiteErrosGlobais', 'LimiteErrosGlobais')),
-    intervaloMinimoEntreRequisicoesSegundos: number(pick(source, 'intervaloMinimoEntreRequisicoesSegundos', 'IntervaloMinimoEntreRequisicoesSegundos')),
-    ultimaRequisicao: pick(source, 'ultimaRequisicao', 'UltimaRequisicao', 'ultimaRequisicaoAgente', 'UltimaRequisicaoAgente') || null,
-    proximaRequisicaoPermitida: pick(source, 'proximaRequisicaoPermitida', 'ProximaRequisicaoPermitida') || null,
-    heartbeat: pick(source, 'heartbeat', 'Heartbeat', 'ultimoHeartbeat', 'UltimoHeartbeat', 'ultimaAtualizacao', 'UltimaAtualizacao') || now,
-    ultimoEvento: text(pick(source, 'ultimoEvento', 'UltimoEvento'), null),
-    categoriaUltimoErro: text(pick(source, 'categoriaUltimoErro', 'CategoriaUltimoErro', 'lastErrorCategory', 'LastErrorCategory'), null),
-    ultimoErro: text(pick(source, 'ultimoErro', 'UltimoErro', 'lastError', 'LastError'), null),
-
-    cifActual: text(pick(source, 'cifActual', 'cifAtual', 'CIFAtual', 'CIF_Atual'), null),
-    ficheiroActual: text(pick(source, 'ficheiroActual', 'ficheiroAtual', 'FicheiroAtual', 'Ficheiro_Atual'), null),
-    campoActual: text(pick(source, 'campoActual', 'campoAtual', 'CampoActual', 'CampoAtual', 'currentField', 'CurrentField'), null),
-
-    pausado: Boolean(pick(source, 'pausado', 'Pausado', 'pausaSolicitada', 'PausaSolicitada')),
-    paragemSeguraSolicitada: Boolean(pick(source, 'paragemSeguraSolicitada', 'ParagemSeguraSolicitada')),
-    ultimoComandoLiveControl: text(pick(source, 'ultimoComandoLiveControl', 'UltimoComandoLiveControl'), null),
-    alteradoPorLiveControl: text(pick(source, 'alteradoPorLiveControl', 'AlteradoPorLiveControl'), null),
-    motivoUltimoComando: text(pick(source, 'motivoUltimoComando', 'MotivoUltimoComando'), null),
-    dataUltimoComandoLiveControl: pick(source, 'dataUltimoComandoLiveControl', 'DataUltimoComandoLiveControl') || null,
-
-    apiWorkersActivos: number(pick(source, 'apiWorkersActivos', 'ApiWorkersActivos', 'Api_Workers_Activos', 'workersActive')),
-    apiWorkersTotal: number(pick(source, 'apiWorkersTotal', 'ApiWorkersTotal', 'Api_Workers_Total', 'workersTotal')),
-    apiWorkersBackoff: number(pick(source, 'apiWorkersBackoff', 'ApiWorkersBackoff', 'Api_Workers_Backoff', 'workersBackoff')),
-    apiBatchSize: number(pick(source, 'apiBatchSize', 'ApiBatchSize', 'Api_Batch_Size', 'batchSize')),
-    apiRpmActual: number(pick(source, 'apiRpmActual', 'ApiRpmActual', 'Api_RPM_Actual', 'rpmActual')),
-    apiRpmLimit: number(pick(source, 'apiRpmLimit', 'ApiRpmLimit', 'Api_RPM_Limit', 'rpmLimit')),
-    apiRpdHoje: number(pick(source, 'apiRpdHoje', 'ApiRpdHoje', 'Api_RPD_Hoje', 'rpdToday')),
-    apiRpdLimit: number(pick(source, 'apiRpdLimit', 'ApiRpdLimit', 'Api_RPD_Limit', 'rpdLimit')),
-    apiTpmActual: number(pick(source, 'apiTpmActual', 'ApiTpmActual', 'Api_TPM_Actual', 'tpmActual')),
-    apiTpmLimit: number(pick(source, 'apiTpmLimit', 'ApiTpmLimit', 'Api_TPM_Limit', 'tpmLimit')),
-    apiTpdHoje: number(pick(source, 'apiTpdHoje', 'ApiTpdHoje', 'Api_TPD_Hoje', 'tpdToday')),
-    apiTpdLimit: number(pick(source, 'apiTpdLimit', 'ApiTpdLimit', 'Api_TPD_Limit', 'tpdLimit')),
-    apiRequestsHoje: number(pick(source, 'apiRequestsHoje', 'ApiRequestsHoje', 'apiRequestsToday', 'requestsToday')),
-    apiInputTokens: number(pick(source, 'apiInputTokens', 'ApiInputTokens', 'inputTokens')),
-    apiOutputTokens: number(pick(source, 'apiOutputTokens', 'ApiOutputTokens', 'outputTokens')),
-    apiCustoEstimadoUsd: number(pick(source, 'apiCustoEstimadoUsd', 'ApiCustoEstimadoUsd', 'estimatedCostUsd')),
-    apiQuotaRestantePercent: number(pick(source, 'apiQuotaRestantePercent', 'ApiQuotaRestantePercent', 'quotaRemainingPercent')),
-
-    timeline: normalizeTimeline(pick(source, 'timeline', 'Timeline'), source),
-    errosPorTipo: objectNumberMap(pick(source, 'errosPorTipo', 'ErrosPorTipo', 'errorsByType', 'ErrorsByType')),
-    workers: normalizeWorkers(pick(source, 'workers', 'Workers')),
-
-    rawPayload: payload,
-    rawPayloadPreview: JSON.stringify(payload).slice(0, 12000),
-    rawKeys: Object.keys(payload || {})
-  };
-
-  item.progressoPercentual = number(pick(source, 'progressoPercentual', 'ProgressoPercentual'), percent(cifsProcessados, cifsRecebidos));
-  item.sucessoPercentual = number(pick(source, 'sucessoPercentual', 'SucessoPercentual'), percent(cifsSucesso, cifsProcessados));
-  return item;
 }
 
 function isAuthorized(req) {
@@ -364,7 +200,7 @@ const server = http.createServer(async (req, res) => {
       service: 'external-telemetry-dashboard',
       storageMode: 'memory-only',
       latestHeartbeat: store.latest?.heartbeat || null,
-      latestReceivedAt: store.latest?.receivedAt || null,
+      latestReceivedAt: store.latestReceivedAt || null,
       historyItems: store.history.length,
       commandItems: store.commands.length,
       telemetryAuthRequired: REQUIRE_TELEMETRY_KEY,
@@ -379,7 +215,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && (pathname === '/api/debug/latest' || pathname === '/api/raw/latest')) {
     if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only' });
-    return sendJson(res, 200, { ok: true, storageMode: 'memory-only', receivedAt: store.latest.receivedAt, rawPayload: store.latest.rawPayload, normalized: store.latest });
+    return sendJson(res, 200, { ok: true, storageMode: 'memory-only', receivedAt: store.latestReceivedAt, rawPayload: store.latest, rawBody: store.latestRawBody });
   }
 
   if (req.method === 'GET' && pathname === '/api/state') {
@@ -419,14 +255,19 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && ['/api/telemetry', '/telemetry', '/api/metrics', '/api/state'].includes(pathname)) {
     if (REQUIRE_TELEMETRY_KEY && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized telemetry write.' });
-    return handleJson(req, res, (parsed) => {
-      const item = normalizeTelemetry(parsed, req);
+    return handleJson(req, res, (parsed, rawBody) => {
+      // Sem normalização de telemetria: o dashboard guarda e devolve exactamente o objecto recebido.
+      // A data de recepção fica apenas em metadados internos para health/debug, sem alterar o payload.
+      const item = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : { rawBody: String(rawBody || '') };
+      const receivedAt = new Date().toISOString();
       store.latest = item;
+      store.latestReceivedAt = receivedAt;
+      store.latestRawBody = String(rawBody || '');
       store.history.push(item);
       store.history = store.history.slice(-MAX_HISTORY);
-      addLog('INF', `Telemetria recebida | Exec=${item.idExecucao || '-'} | Estado=${item.estadoFinal || '-'} | Progresso=${item.progressoPercentual || 0}%`);
+      addLog('INF', `Telemetria recebida | Exec=${item.idExecucao || '-'} | Estado=${item.estadoFinal || '-'} | Progresso=${item.percentagemConcluida ?? '-'}%`);
       broadcast({ type: 'telemetry', latest: item });
-      return sendJson(res, 202, { ok: true, storageMode: 'memory-only', idExecucao: item.idExecucao, receivedAt: item.receivedAt, shownInDashboard: true });
+      return sendJson(res, 202, { ok: true, storageMode: 'memory-only', idExecucao: item.idExecucao || null, receivedAt, shownInDashboard: true });
     });
   }
 
