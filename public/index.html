@@ -156,14 +156,14 @@
       </section>
 
       <section id="page-control" class="page">
-        <div class="hero"><div><h2>Live Control</h2><p>Controlo operacional limitado para pausar, retomar, parar com segurança, seleccionar runtime e parametrizar a execução do Agente IA.</p></div><span class="status warning">Modo Controlado</span></div>
-        <div class="warning-box">O Live Control envia pedidos auditáveis. A aplicação RPA deve consumir estes comandos de forma controlada antes de alterar o fluxo operacional.</div>
-        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Selecção De Runtime</h3><p class="card-subtitle">Escolha o runtime preferencial e quando a alteração deve ser aplicada pelo Agente IA.</p></div></div><div class="card-body grid cols-5">
-          <div class="field"><label for="paramRuntime">Runtime Preferencial</label><select id="paramRuntime"><option value="web" selected>Runtime Web / Copilot Chat Web</option><option value="api">Runtime API / Modelos LLM</option><option value="auto">Auto / Política Operacional</option></select></div>
-          <div class="field"><label for="paramRuntimeApply">Aplicar Alteração</label><select id="paramRuntimeApply"><option value="nextExecution">Próxima Execução</option><option value="afterCurrentCif">Após CIF Actual</option><option value="afterPause">Após Pausa Segura</option></select></div>
+        <div class="hero"><div><h2>Live Control</h2><p>Controlo operacional compatível com o runtime WEB actual: pausar após o CIF em curso, retomar, paragem segura e ajuste de limites suportados pelo projecto.</p></div><span class="status warning">Modo Controlado</span></div>
+        <div class="warning-box">Cada alteração pede senha antes de ser registada. O RPA consome os comandos de forma segura e mantém os logs locais como estão.</div>
+        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Runtime Suportado</h3><p class="card-subtitle">O projecto C# actual continua no runtime WEB - Copilot. O selector API fica apenas para visualização de telemetria futura no dashboard.</p></div></div><div class="card-body grid cols-5">
+          <div class="field"><label for="paramRuntime">Runtime Operacional</label><select id="paramRuntime"><option value="web" selected>WEB - Copilot</option></select></div>
           <div class="metric-line"><span>Runtime Actual</span><strong id="controlRuntimeActual">Web</strong></div>
           <div class="metric-line"><span>Runtime Solicitado</span><strong id="controlRuntimeRequested">Web</strong></div>
-          <div style="display:flex; align-items:end;"><button class="button primary" id="applyRuntimeBtn" type="button">Aplicar Runtime</button></div>
+          <div class="metric-line"><span>Modo</span><strong>DEV</strong></div>
+          <div class="metric-line"><span>Aplicação</span><strong>Após CIF Actual</strong></div>
         </div></div>
         <div class="grid cols-3 section-gap">
           <div class="card"><div class="card-header"><div><h3 class="card-title">Estado Actual</h3><p class="card-subtitle">Leitura operacional do agente.</p></div></div><div class="card-body metric-list">
@@ -172,26 +172,17 @@
           <div class="card" style="grid-column: span 2;"><div class="card-header"><div><h3 class="card-title">Comandos Operacionais</h3><p class="card-subtitle">Pedidos gravados para execução controlada pelo Agente IA.</p></div></div><div class="card-body"><div class="command-grid">
             <div class="command-card"><h4>Pausar Após CIF Actual</h4><p>Termina o CIF em curso e suspende a próxima iteração.</p><button class="button warning" data-command="PauseAfterCurrentCif">Pausar</button></div>
             <div class="command-card"><h4>Retomar Execução</h4><p>Remove o estado de pausa e permite continuar o processamento.</p><button class="button success" data-command="ResumeExecution">Retomar</button></div>
-            <div class="command-card"><h4>Paragem Segura</h4><p>Finaliza sem interromper escrita de métricas.</p><button class="button danger" data-command="SafeStop">Parar</button></div>
+            <div class="command-card"><h4>Paragem Segura</h4><p>Finaliza o ciclo sem interromper escrita de métricas.</p><button class="button danger" data-command="SafeStop">Parar</button></div>
           </div></div></div>
         </div>
-        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Parâmetros Ajustáveis</h3><p class="card-subtitle">Ajustes operacionais sem deploy. Parâmetros API aparecem apenas quando o runtime API estiver seleccionado.</p></div></div><div class="card-body grid cols-3">
-          <div class="field runtime-web-control"><label for="paramWebModel">Modelo Web</label><select id="paramWebModel"><option>Claude / Opus</option><option>GPT 5.5 Think Deeper</option><option>GPT 5.4 Think Deeper</option><option>GPT 5.2 Análise Aprofundada</option></select></div>
-          <div class="field runtime-api-control"><label for="paramApiModel">Modelo API</label><select id="paramApiModel"><option>Gemma 4 31B IT</option><option>Gemma 4 26B A4B IT</option><option>Gemini Flash</option><option>GPT 5.2 Global</option><option>Qwen 3.6 VL 8B</option></select></div>
-          <div class="field runtime-web-control"><label for="paramInterval">Intervalo Entre Requisições</label><select id="paramInterval"><option value="60">60 segundos</option><option value="90">90 segundos</option><option value="120">120 segundos</option></select></div>
-          <div class="field"><label for="paramGlobalErrors">Limite De Erros Globais</label><select id="paramGlobalErrors"><option value="2">2 erros</option><option value="3">3 erros</option><option value="5">5 erros</option></select></div>
-          <div class="field"><label for="paramLogLevel">Nível De Log</label><select id="paramLogLevel"><option>Information</option><option>Warning</option><option>Debug</option><option>Error</option></select></div>
-          <div class="field"><label for="paramNormalization">Normalização</label><select id="paramNormalization"><option value="true">Activa</option><option value="false">Inactiva</option></select></div>
-          <div class="field runtime-api-control"><label for="paramWorkerCount">Workers API</label><select id="paramWorkerCount"><option value="1">1 worker</option><option value="2">2 workers</option><option value="3" selected>3 workers</option><option value="4">4 workers</option><option value="6">6 workers</option></select></div>
-          <div class="field runtime-api-control"><label for="paramBatchSize">Máximo De CIFs Por Worker</label><input id="paramBatchSize" type="number" min="1" value="400" /></div>
-          <div class="field runtime-api-control"><label for="paramRpmLimit">RPM Máximo</label><input id="paramRpmLimit" type="number" min="1" value="13" /></div>
-          <div class="field runtime-api-control"><label for="paramRpdLimit">RPD Máximo</label><input id="paramRpdLimit" type="number" min="1" value="1400" /></div>
-          <div class="field runtime-api-control"><label for="paramTpmLimit">TPM Máximo</label><input id="paramTpmLimit" type="number" min="1" value="100000" /></div>
-          <div class="field runtime-api-control"><label for="paramTpdLimit">TPD Máximo</label><input id="paramTpdLimit" type="number" min="1" value="1000000" /></div>
-          <div class="field" style="grid-column: 1 / -1;"><label for="changeReason">Motivo Da Alteração</label><textarea id="changeReason" placeholder="Ex.: Reduzir timeouts após aumento de erros globais."></textarea></div>
+        <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Parâmetros Ajustáveis Do Runtime WEB</h3><p class="card-subtitle">Apenas parâmetros que o projecto actual consegue aplicar em execução. O modelo, prompts e regras de extração permanecem inalterados.</p></div></div><div class="card-body grid cols-3">
+          <div class="field runtime-web-control"><label for="paramInterval">Intervalo Entre Requisições</label><select id="paramInterval"><option value="25">25 segundos</option><option value="60">60 segundos</option><option value="90">90 segundos</option><option value="120">120 segundos</option></select></div>
+          <div class="field"><label for="paramGlobalErrors">Limite De Erros Globais</label><select id="paramGlobalErrors"><option value="3">3 erros</option><option value="5">5 erros</option><option value="8">8 erros</option></select></div>
+          <div class="field"><label>Modelo</label><input value="Mantido pelo projecto C#" disabled /></div>
+          <div class="field" style="grid-column: 1 / -1;"><label for="changeReason">Motivo Da Alteração</label><textarea id="changeReason" placeholder="Ex.: Aumentar intervalo para reduzir timeouts após erros consecutivos."></textarea></div>
           <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px;"><button class="button" id="resetParamsBtn">Limpar</button><button class="button primary" id="saveParamsBtn">Enviar Alterações</button></div>
         </div></div>
-        <div class="card section-gap runtime-api-control"><div class="card-header"><div><h3 class="card-title">Workers Activos</h3><p class="card-subtitle">Estado individual dos workers do Runtime API.</p></div></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Estado</th><th>Processando</th><th>Fila Local</th><th>Modelo</th><th>Último Heartbeat</th><th>Acção</th></tr></thead><tbody id="workersTableBody"></tbody></table></div></div></div>
+        <div class="card section-gap runtime-api-control"><div class="card-header"><div><h3 class="card-title">Workers Activos</h3><p class="card-subtitle">Estado individual dos workers quando existir Runtime API.</p></div></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Estado</th><th>Processando</th><th>Fila Local</th><th>Modelo</th><th>Último Heartbeat</th><th>Acção</th></tr></thead><tbody id="workersTableBody"></tbody></table></div></div></div>
         <div class="card section-gap"><div class="card-header"><div><h3 class="card-title">Auditoria De Comandos</h3><p class="card-subtitle">Histórico de comandos solicitados através do dashboard.</p></div></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Data/Hora</th><th>Comando</th><th>Estado</th><th>Solicitado Por</th><th>Motivo</th></tr></thead><tbody id="commandAuditBody"></tbody></table></div></div></div>
       </section>
 
