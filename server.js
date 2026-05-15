@@ -7,18 +7,28 @@ const path = require('path');
 const PORT = Number(process.env.PORT || 8080);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 25 * 1024 * 1024);
-const MAX_HISTORY = Number(process.env.MAX_HISTORY || process.env.MAX_HISTORY_ITEMS || 300);
+const HISTORY_RETENTION_HOURS = Number(process.env.HISTORY_RETENTION_HOURS || 24);
+const MAX_HISTORY = Number(process.env.MAX_HISTORY || process.env.MAX_HISTORY_ITEMS || 20000);
+const MAX_DB_HISTORY = Number(process.env.MAX_DB_HISTORY || 5000);
 const MAX_COMMANDS = Number(process.env.MAX_COMMANDS || 300);
 const MAX_LOGS = Number(process.env.MAX_LOGS || 300);
 
-// Dashboard urgente: memória apenas. Não lê nem escreve telemetry-store.json.
-// Se o Render reiniciar/redeployar, o latest/histórico/comandos desaparecem, mas a recepção em tempo real não fica bloqueada por I/O.
+// Dashboard externo: memória apenas. Não lê nem escreve ficheiros de persistência.
+// Se o Render reiniciar/redeployar, latest/histórico/comandos desaparecem, mas a recepção em tempo real continua sem I/O local.
 const REQUIRE_TELEMETRY_KEY = String(process.env.REQUIRE_TELEMETRY_KEY || 'false').toLowerCase() === 'true';
 const TELEMETRY_KEY = process.env.TELEMETRY_KEY || process.env.DASHBOARD_SHARED_SECRET || process.env.API_KEY || '';
 const LIVE_CONTROL_PASSWORD = process.env.LIVE_CONTROL_PASSWORD || 'Zeus';
 const REQUIRE_COMMAND_SECRET = String(process.env.REQUIRE_COMMAND_SECRET || 'false').toLowerCase() === 'true';
 
-const store = { latest: null, latestReceivedAt: null, latestRawBody: null, history: [], commands: [], logs: [] };
+const store = {
+  latest: null,
+  latestReceivedAt: null,
+  latestRawBody: null,
+  history: [], // { receivedAt, item }
+  dbHistory: [], // { receivedAt, item }
+  commands: [],
+  logs: []
+};
 const eventClients = new Set();
 
 function normalizePathname(value) {
@@ -148,6 +158,56 @@ async function handleJson(req, res, handler) {
   return handler(parsed, raw);
 }
 
+function itemTimestamp(item, fallback = null) {
+  const value = pick(
+    item,
+    'dataHoraOrigem', 'heartbeat', 'receivedAt', 'ultimaAtualizacao',
+    'Data_Hora_Inicio', 'Data_Hora_Fim', 'Criado_Em', 'DataHoraInicio', 'DataHoraFim'
+  );
+  const date = value ? new Date(value) : null;
+  if (date && !Number.isNaN(date.getTime())) return date.toISOString();
+  return fallback || new Date().toISOString();
+}
+
+function pruneHistory() {
+  const cutoff = Date.now() - HISTORY_RETENTION_HOURS * 60 * 60 * 1000;
+  const keepRecent = record => {
+    const date = new Date(record.receivedAt || itemTimestamp(record.item));
+    return !Number.isNaN(date.getTime()) && date.getTime() >= cutoff;
+  };
+
+  store.history = store.history.filter(keepRecent).slice(-MAX_HISTORY);
+  store.dbHistory = store.dbHistory.filter(keepRecent).slice(-MAX_DB_HISTORY);
+}
+
+function getExecutionId(item) {
+  const value = pick(item, 'idExecucao', 'Id_Execucao', 'id_execucao', 'IdExecucao');
+  return value === undefined || value === null || value === '' ? null : String(value);
+}
+
+function mergedHistoryItems(limit = MAX_HISTORY) {
+  pruneHistory();
+  const all = store.history.map(x => ({ ...x, source: 'telemetry' }))
+    .concat(store.dbHistory.map(x => ({ ...x, source: 'sql' })));
+
+  // Dedupe só para linhas SQL da mesma execução quando chegam vários syncs; telemetria em tempo real mantém pontos de evolução.
+  const seenDb = new Set();
+  const result = [];
+  for (const record of all.slice().reverse()) {
+    const item = record.item;
+    const id = getExecutionId(item);
+    if (record.source === 'sql' && id) {
+      if (seenDb.has(id)) continue;
+      seenDb.add(id);
+    }
+    result.push(item);
+  }
+
+  return result
+    .sort((a, b) => new Date(itemTimestamp(a)).getTime() - new Date(itemTimestamp(b)).getTime())
+    .slice(-limit);
+}
+
 function createCommand(payload) {
   const parameters = payload.parameters && typeof payload.parameters === 'object' ? { ...payload.parameters } : {};
   delete parameters.password;
@@ -194,14 +254,17 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return sendJson(res, 204, {});
 
   if (req.method === 'GET' && (pathname === '/api/health' || pathname === '/health')) {
+    pruneHistory();
     return sendJson(res, 200, {
       ok: true,
       status: 'online',
       service: 'external-telemetry-dashboard',
-      storageMode: 'memory-only',
+      storageMode: 'memory-only-24h',
+      retentionHours: HISTORY_RETENTION_HOURS,
       latestHeartbeat: store.latest?.heartbeat || null,
       latestReceivedAt: store.latestReceivedAt || null,
       historyItems: store.history.length,
+      dbHistoryItems: store.dbHistory.length,
       commandItems: store.commands.length,
       telemetryAuthRequired: REQUIRE_TELEMETRY_KEY,
       time: new Date().toISOString()
@@ -209,24 +272,32 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && (pathname === '/api/telemetry/latest' || pathname === '/api/latest')) {
-    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only' });
+    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only-24h' });
     return sendJson(res, 200, store.latest);
   }
 
   if (req.method === 'GET' && (pathname === '/api/debug/latest' || pathname === '/api/raw/latest')) {
-    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only' });
-    return sendJson(res, 200, { ok: true, storageMode: 'memory-only', receivedAt: store.latestReceivedAt, rawPayload: store.latest, rawBody: store.latestRawBody });
+    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only-24h' });
+    return sendJson(res, 200, { ok: true, storageMode: 'memory-only-24h', receivedAt: store.latestReceivedAt, rawPayload: store.latest, rawBody: store.latestRawBody });
   }
 
   if (req.method === 'GET' && pathname === '/api/state') {
-    return sendJson(res, 200, { ok: true, storageMode: 'memory-only', latest: store.latest, historyCount: store.history.length, commands: store.commands.slice(-50) });
+    pruneHistory();
+    return sendJson(res, 200, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, latest: store.latest, historyCount: store.history.length, dbHistoryCount: store.dbHistory.length, commands: store.commands.slice(-50) });
   }
 
   if (req.method === 'GET' && (pathname === '/api/telemetry/history' || pathname === '/api/history')) {
-    const take = Math.min(number(requestUrl.searchParams.get('take') || requestUrl.searchParams.get('limit'), MAX_HISTORY), MAX_HISTORY);
-    const items = store.history.slice(-take);
-    if (pathname === '/api/history') return sendJson(res, 200, { ok: true, storageMode: 'memory-only', items: items.slice().reverse() });
+    const defaultTake = Math.min(MAX_HISTORY + MAX_DB_HISTORY, 25000);
+    const take = Math.min(number(requestUrl.searchParams.get('take') || requestUrl.searchParams.get('limit'), defaultTake), defaultTake);
+    const items = mergedHistoryItems(take);
+    if (pathname === '/api/history') return sendJson(res, 200, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, items: items.slice().reverse() });
     return sendJson(res, 200, items);
+  }
+
+  if (req.method === 'GET' && pathname === '/api/db-history') {
+    const take = Math.min(number(requestUrl.searchParams.get('take'), MAX_DB_HISTORY), MAX_DB_HISTORY);
+    pruneHistory();
+    return sendJson(res, 200, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, items: store.dbHistory.slice(-take).map(x => x.item) });
   }
 
   if (req.method === 'GET' && pathname === '/api/commands') {
@@ -257,17 +328,35 @@ const server = http.createServer(async (req, res) => {
     if (REQUIRE_TELEMETRY_KEY && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized telemetry write.' });
     return handleJson(req, res, (parsed, rawBody) => {
       // Sem normalização de telemetria: o dashboard guarda e devolve exactamente o objecto recebido.
-      // A data de recepção fica apenas em metadados internos para health/debug, sem alterar o payload.
       const item = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : { rawBody: String(rawBody || '') };
       const receivedAt = new Date().toISOString();
       store.latest = item;
       store.latestReceivedAt = receivedAt;
       store.latestRawBody = String(rawBody || '');
-      store.history.push(item);
-      store.history = store.history.slice(-MAX_HISTORY);
-      addLog('INF', `Telemetria recebida | Exec=${item.idExecucao || '-'} | Estado=${item.estadoFinal || '-'} | Progresso=${item.percentagemConcluida ?? '-'}%`);
+      store.history.push({ receivedAt, item });
+      pruneHistory();
+      addLog('INF', `Telemetria recebida | Exec=${item.idExecucao || item.Id_Execucao || '-'} | Estado=${item.estadoFinal || item.Estado_Final || '-'} | Progresso=${item.percentagemConcluida ?? '-'}%`);
       broadcast({ type: 'telemetry', latest: item });
-      return sendJson(res, 202, { ok: true, storageMode: 'memory-only', idExecucao: item.idExecucao || null, receivedAt, shownInDashboard: true });
+      return sendJson(res, 202, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, idExecucao: item.idExecucao || item.Id_Execucao || null, receivedAt, shownInDashboard: true });
+    });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/db-history/sync') {
+    if (REQUIRE_TELEMETRY_KEY && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized history sync.' });
+    return handleJson(req, res, (parsed) => {
+      const rawItems = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : []);
+      const receivedAt = new Date().toISOString();
+      const rows = rawItems
+        .filter(item => item && typeof item === 'object' && !Array.isArray(item));
+
+      for (const item of rows) {
+        store.dbHistory.push({ receivedAt: itemTimestamp(item, receivedAt), item });
+      }
+
+      pruneHistory();
+      addLog('INF', `Histórico SQL sincronizado | Linhas=${rows.length} | Retenção=${HISTORY_RETENTION_HOURS}h`);
+      broadcast({ type: 'db-history', count: rows.length });
+      return sendJson(res, 202, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, rowsReceived: rows.length, rowsStored: store.dbHistory.length, receivedAt });
     });
   }
 
@@ -302,6 +391,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[INF] Dashboard externo iniciado em http://0.0.0.0:${PORT}`);
-  console.log(`[INF] StorageMode=memory-only | POST /api/telemetry | AuthObrigatoria=${REQUIRE_TELEMETRY_KEY}`);
+  console.log(`[INF] StorageMode=memory-only-24h | Retention=${HISTORY_RETENTION_HOURS}h | POST /api/telemetry | POST /api/db-history/sync | AuthObrigatoria=${REQUIRE_TELEMETRY_KEY}`);
   console.log('[INF] Live Control: POST /api/commands | Senha via payload/header');
 });
