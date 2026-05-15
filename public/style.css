@@ -153,3 +153,34 @@
     @media (max-width: 720px) { .main { padding: 16px; } .header-inner { padding: 14px 16px; } .hero { grid-template-columns: 1fr; } .cols-6, .cols-5, .cols-4, .cols-3, .cols-2, .comparison-box, .command-grid, .progress-meta, .current-processing { grid-template-columns: 1fr; } .hero h2 { font-size: 25px; } .progress-top { grid-template-columns: 1fr; } }
 
 .raw-preview { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #050505; color: #f8f8f8; border-radius: 16px; padding: 14px; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+
+/* Ajustes operacionais: ocultar nome do ficheiro actual sem remover o elemento do DOM. */
+.file-name-disabled { display: none !important; }
+
+/* ApexCharts: tooltip legível em cartões claros e escuros. */
+.apexcharts-tooltip,
+.apexcharts-tooltip.apexcharts-theme-light,
+.apexcharts-tooltip.apexcharts-theme-dark {
+  background: #ffffff !important;
+  color: #111111 !important;
+  border: 1px solid rgba(17, 17, 17, 0.18) !important;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18) !important;
+}
+.apexcharts-tooltip-title {
+  background: #f3f4f6 !important;
+  color: #111111 !important;
+  border-bottom: 1px solid rgba(17, 17, 17, 0.12) !important;
+}
+.apexcharts-tooltip-text,
+.apexcharts-tooltip-text-y-label,
+.apexcharts-tooltip-text-y-value,
+.apexcharts-tooltip-marker,
+.apexcharts-xaxistooltip,
+.apexcharts-yaxistooltip {
+  color: #111111 !important;
+}
+.apexcharts-xaxistooltip,
+.apexcharts-yaxistooltip {
+  background: #ffffff !important;
+  border: 1px solid rgba(17, 17, 17, 0.18) !important;
+}
