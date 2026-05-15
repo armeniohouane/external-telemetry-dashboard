@@ -151,3 +151,5 @@
     .log-INF { color: #c9ffd8; }
     @media (max-width: 1180px) { .header-inner { grid-template-columns: 1fr; align-items: start; } .nav { justify-content: flex-start; } .header-actions { justify-content: flex-start; } .cols-6, .cols-5, .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .charts-grid { grid-template-columns: 1fr; } .command-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .progress-meta, .current-processing { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 720px) { .main { padding: 16px; } .header-inner { padding: 14px 16px; } .hero { grid-template-columns: 1fr; } .cols-6, .cols-5, .cols-4, .cols-3, .cols-2, .comparison-box, .command-grid, .progress-meta, .current-processing { grid-template-columns: 1fr; } .hero h2 { font-size: 25px; } .progress-top { grid-template-columns: 1fr; } }
+
+.raw-preview { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #050505; color: #f8f8f8; border-radius: 16px; padding: 14px; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
