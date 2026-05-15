@@ -137,6 +137,19 @@
             <div class="metric-line"><span>Próxima Requisição</span><strong id="modelNextRequest">--</strong></div>
           </div></div>
         </div>
+        <div class="card section-gap">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">Último Payload Recebido</h3>
+              <p class="card-subtitle">Debug operacional: o dashboard guarda o payload bruto recebido do C# e também apresenta os campos normalizados acima.</p>
+            </div>
+            <span class="status info" id="rawPayloadStatus">A aguardar</span>
+          </div>
+          <div class="card-body">
+            <pre id="rawPayloadPreview" class="raw-preview">Sem payload recebido.</pre>
+          </div>
+        </div>
+
       </section>
 
       <section id="page-history" class="page">
