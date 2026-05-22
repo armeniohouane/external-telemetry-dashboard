@@ -1,34 +1,275 @@
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>External Telemetry Dashboard</title>
-  <link rel="stylesheet" href="/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agente Clientes Irregulares · Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- ─── API base URL ───────────────────────────────────────────────────────
+       Set AGENT_API_BASE to the C# backend origin, e.g.:
+         https://agente-clientes-irregulares.onrender.com
+       Leave empty to use relative paths (same origin / local dev).
+  ──────────────────────────────────────────────────────────────────────── -->
+  <script>
+    window.AGENT_API_BASE = "";   /* override via env-inject or _redirects */
+  </script>
 </head>
 <body>
-  <div class="container">
-    <div class="card">
-      <h1>Dashboard Externo</h1>
-      <p>Telemetria do agente Clientes Irregulares</p>
-    </div>
 
-    <div class="card">
-      <h2>Live Control</h2>
-      <div class="buttons">
-        <button class="primary" onclick="sendCommand('PauseSystem')">Pausar</button>
-        <button class="primary" onclick="sendCommand('ResumeSystem')">Retomar</button>
-        <button class="danger" onclick="sendCommand('PauseWebWorker')">Pausar Web</button>
-        <button class="primary" onclick="sendCommand('ResumeWebWorker')">Retomar Web</button>
+  <!-- ─── Password modal (Live Control) ─────────────────────────────────── -->
+  <div id="pwdOverlay" class="pwd-overlay" hidden>
+    <div class="pwd-modal" role="dialog" aria-modal="true" aria-labelledby="pwdTitle">
+      <div class="pwd-icon"><i data-lucide="lock-keyhole" width="26"></i></div>
+      <h2 id="pwdTitle">Autenticação Necessária</h2>
+      <p>Introduza a senha de controlo para enviar este comando.</p>
+      <div class="pwd-field">
+        <input id="pwdInput" type="password" placeholder="Senha" autocomplete="current-password" />
+        <button id="pwdShowBtn" class="pwd-show-btn" title="Mostrar/Ocultar" tabindex="-1">
+          <i id="pwdEyeIcon" data-lucide="eye" width="16"></i>
+        </button>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>Última Telemetria</h2>
-      <pre id="telemetry">A carregar...</pre>
+      <div id="pwdError" class="pwd-error" hidden>Senha incorrecta. Tente novamente.</div>
+      <div class="pwd-actions">
+        <button id="pwdCancelBtn" class="small-btn">Cancelar</button>
+        <button id="pwdConfirmBtn" class="small-btn primary"><i data-lucide="send" width="13"></i>Confirmar</button>
+      </div>
     </div>
   </div>
 
-  <script src="/app.js"></script>
+  <main class="page">
+    <h1 class="page-title">Visão Geral Da Execução</h1>
+
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon"><i data-lucide="brain-circuit" width="21" height="21"></i></div>
+        <div>
+          <div class="brand-title">Clientes Irregulares</div>
+          <div class="brand-subtitle">Observabilidade e controlo do Agente IA</div>
+        </div>
+      </div>
+
+      <nav class="nav-tabs" aria-label="Navegação principal">
+        <button class="tab-btn active" data-view="tempo-real"><i data-lucide="activity" width="14"></i>Tempo Real</button>
+        <button class="tab-btn" data-view="historico"><i data-lucide="history" width="14"></i>Histórico</button>
+        <button class="tab-btn" data-view="telemetria"><i data-lucide="server-cog" width="14"></i>Telemetria</button>
+        <button class="tab-btn" data-view="live-control"><i data-lucide="sliders-horizontal" width="14"></i>Live Control</button>
+      </nav>
+
+      <div class="toolbar">
+        <span class="chip"><span class="dot"></span><span id="systemStateLabel">Activo</span></span>
+        <span class="chip real">REAL</span>
+        <select id="runtimeSelect" class="select" aria-label="Runtime">
+          <option value="Web" selected>Web · Copilot</option>
+          <option value="API + Web">API + Web</option>
+          <option value="API">API</option>
+          <option value="Offline">Offline</option>
+        </select>
+        <button id="themeToggle" class="icon-btn" title="Alternar Modo"><i id="themeIcon" data-lucide="moon" width="16"></i></button>
+        <button id="refreshBtn" class="refresh"><i data-lucide="refresh-cw" width="14"></i>Actualizar</button>
+      </div>
+    </header>
+
+    <!-- ── Tempo Real ──────────────────────────────────────────────────────── -->
+    <section id="tempo-real" class="view active">
+      <section class="hero">
+        <div class="hero-head">
+          <div>
+            <h2 class="section-title">Progresso Da Execução</h2>
+            <div class="hero-subchips">
+              <span class="status-chip"><i data-lucide="clock-3" width="14"></i><span id="statusMessage">A aguardar dados do agente</span></span>
+              <span class="status-chip"><i data-lucide="workflow" width="14"></i><span id="modeLabel">Modo: Online</span></span>
+              <span class="status-chip"><i data-lucide="git-branch-plus" width="14"></i><span id="runtimeLabel">Runtime: Web</span></span>
+            </div>
+          </div>
+          <span class="heartbeat"><i data-lucide="heart-pulse" width="14"></i><span id="heartbeatLabel">Último Heartbeat: —</span></span>
+        </div>
+
+        <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+        <div id="heroMetrics" class="hero-metrics"></div>
+
+        <div class="hero-chart-grid">
+          <article class="hero-chart-panel">
+            <div class="chart-title-row"><span>Evolução Da Execução</span><span>Últimas 3h</span></div>
+            <div id="executionChart" class="hero-chart-box"></div>
+          </article>
+          <article class="hero-chart-panel">
+            <div class="chart-title-row"><span>Distribuição Dos Resultados</span><span>Execução actual</span></div>
+            <div class="hero-donut-box">
+              <div id="donutChart"></div>
+              <div class="donut-center"><div><span>Total</span><strong id="donutTotal">0</strong></div></div>
+            </div>
+          </article>
+        </div>
+
+        <div id="heroBottom" class="hero-bottom"></div>
+      </section>
+
+      <div id="cardGroups"></div>
+
+      <section class="layout-three">
+        <article class="panel">
+          <h3 class="panel-title">Classificação De Erros</h3>
+          <p class="panel-subtitle">Falhas mais relevantes para operação.</p>
+          <div id="errorChart" class="chart-box"></div>
+        </article>
+        <article class="panel">
+          <h3 class="panel-title">Qualidade Da Execução</h3>
+          <p class="panel-subtitle">Indicadores funcionais da execução actual.</p>
+          <div id="qualityRows" class="list-rows"></div>
+        </article>
+        <article class="panel">
+          <h3 class="panel-title">Execução E Modelo</h3>
+          <p class="panel-subtitle">Estado dos runtimes, modelo, fallback e writer.</p>
+          <div id="modelRows" class="list-rows"></div>
+        </article>
+      </section>
+
+      <section class="layout-two">
+        <article class="panel">
+          <div class="panel-head">
+            <div><h3 class="panel-title">Log Bruto Sequencial</h3><p class="panel-subtitle">Tarefas globais e específicas da execução actual.</p></div>
+            <span class="origin-chip"><i data-lucide="file-text" width="14"></i>Serilog</span>
+          </div>
+          <div id="timeline" class="timeline"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head">
+            <div><h3 class="panel-title">Último Payload Recebido</h3><p class="panel-subtitle">Payload bruto recebido pelo dashboard.</p></div>
+            <span class="origin-chip"><i data-lucide="database-zap" width="14"></i>Snapshot</span>
+          </div>
+          <pre id="payloadBlock">{}</pre>
+        </article>
+      </section>
+    </section>
+
+    <!-- ── Histórico ───────────────────────────────────────────────────────── -->
+    <section id="historico" class="view">
+      <section id="historyCards" class="cards-grid"></section>
+      <section class="layout-two">
+        <article class="panel">
+          <h3 class="panel-title">Histórico De Execuções</h3>
+          <p class="panel-subtitle">Resumo das últimas execuções do agente.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Id Execução</th><th>Data</th><th>Modo</th><th>Runtime</th><th>Estado</th><th>CIFs</th><th>Sucesso</th><th>Erros</th><th>Duração</th></tr></thead>
+              <tbody id="historyBody"></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel">
+          <h3 class="panel-title">Tendência Histórica</h3>
+          <p class="panel-subtitle">Volume processado e taxa de sucesso por execução.</p>
+          <div id="historyChart" class="chart-box"></div>
+        </article>
+      </section>
+    </section>
+
+    <!-- ── Telemetria ──────────────────────────────────────────────────────── -->
+    <section id="telemetria" class="view">
+      <h2 class="telemetry-title">Telemetria Detalhada</h2>
+      <p class="telemetry-subtitle">Estado completo por runtime, staging, offline e Database Writer para a execução corrente.</p>
+      <div id="telemetryGrid" class="telemetry-grid"></div>
+    </section>
+
+    <!-- ── Live Control ────────────────────────────────────────────────────── -->
+    <section id="live-control" class="view">
+      <div class="live-control-notice">
+        <i data-lucide="shield-check" width="16"></i>
+        <span>Todas as acções nesta secção requerem autenticação. Será pedida a senha antes de cada envio.</span>
+      </div>
+      <section class="controls-grid">
+        <article class="control-card">
+          <div class="control-title"><h3>Modo De Operação</h3><span class="status-inline success">Customizável</span></div>
+          <div class="field-grid">
+            <div class="field"><label>Modo</label><select id="modeInput"><option>Automático</option><option>Forçar Online</option><option>Forçar Offline</option><option>Pausado</option></select></div>
+            <div class="field"><label>Respeitar Janela</label><select id="respectWindowInput"><option value="true">Sim</option><option value="false">Não</option></select></div>
+            <div class="field"><label>FTP Fora Do Online</label><select id="ftpOutsideOnlineInput"><option value="false">Não</option><option value="true">Sim, Override</option></select></div>
+            <div class="field"><label>Offline Usa Só Local</label><select id="offlineLocalOnlyInput"><option value="true">Sim</option><option value="false">Não</option></select></div>
+            <div class="field"><label>Encerrar Na Troca</label><select id="shutdownModeInput"><option>Após CIF Actual</option><option>Imediato</option><option>Não Encerrar</option></select></div>
+            <div class="field"><label>Janela Custom</label><input id="customWindowInput" value="18:00 - 06:00" /></div>
+          </div>
+          <div class="button-row">
+            <button class="small-btn primary lc-action" id="applyModeBtn"><i data-lucide="save" width="14"></i>Aplicar</button>
+            <button class="small-btn warn lc-action" data-command="PauseSystem"><i data-lucide="pause" width="14"></i>Pausar Sistema</button>
+            <button class="small-btn success lc-action" data-command="ResumeSystem"><i data-lucide="play" width="14"></i>Retomar</button>
+          </div>
+        </article>
+
+        <article class="control-card">
+          <div class="control-title"><h3>Workers API</h3><span id="apiWorkersStatus" class="status-inline success">0 Activos</span></div>
+          <div class="field-grid">
+            <div class="field"><label>Nº Workers</label><input id="apiWorkerCount" type="number" min="0" value="3" /></div>
+            <div class="field"><label>Batch Por Worker</label><input id="apiBatchSize" type="number" value="400" /></div>
+            <div class="field"><label>Permitir Novos Claims</label><select id="apiAllowClaims"><option value="true">Sim</option><option value="false">Não</option></select></div>
+            <div class="field"><label>Encerrar API</label><select id="apiShutdownAfterCif"><option value="true">Após CIF Actual</option><option value="false">Não</option></select></div>
+          </div>
+          <div class="button-row">
+            <button class="small-btn lc-action" id="increaseWorkersBtn"><i data-lucide="plus" width="14"></i>Aumentar</button>
+            <button class="small-btn lc-action" id="decreaseWorkersBtn"><i data-lucide="minus" width="14"></i>Diminuir</button>
+            <button class="small-btn primary lc-action" id="applyWorkersBtn"><i data-lucide="save" width="14"></i>Aplicar</button>
+            <button class="small-btn warn lc-action" data-command="PauseApiWorkers"><i data-lucide="pause" width="14"></i>Pausar API</button>
+          </div>
+        </article>
+
+        <article class="control-card">
+          <div class="control-title"><h3>Web Worker</h3><span class="status-inline warning">Sequencial</span></div>
+          <div class="field-grid">
+            <div class="field"><label>Activo</label><select id="webActive"><option value="true">Sim</option><option value="false">Não</option></select></div>
+            <div class="field"><label>Intervalo Prompt</label><input id="webInterval" type="number" value="20" /></div>
+            <div class="field"><label>Timeout Resposta</label><input id="webTimeout" type="number" value="180" /></div>
+            <div class="field"><label>Erros Consecutivos</label><input id="webErrors" type="number" value="3" /></div>
+          </div>
+          <div class="button-row">
+            <button class="small-btn primary lc-action" id="applyWebBtn"><i data-lucide="save" width="14"></i>Aplicar Web</button>
+            <button class="small-btn warn lc-action" data-command="PauseWebWorker"><i data-lucide="pause" width="14"></i>Pausar Web</button>
+            <button class="small-btn success lc-action" data-command="ResumeWebWorker"><i data-lucide="play" width="14"></i>Retomar Web</button>
+          </div>
+        </article>
+
+        <article class="control-card">
+          <div class="control-title"><h3>Lista De Workers</h3><span class="status-inline">Controlo Individual</span></div>
+          <div id="workersList" class="worker-list"></div>
+        </article>
+
+        <article class="control-card">
+          <div class="control-title"><h3>FTP Staging</h3><span class="status-inline success">Activo</span></div>
+          <div class="field-grid">
+            <div class="field"><label>CIFs Para Preparar</label><input id="stagingCifs" type="number" value="500" /></div>
+            <div class="field"><label>Máx. GB Disco</label><input id="stagingDisk" type="number" value="20" /></div>
+            <div class="field"><label>Máx. Ficheiros / CIF</label><input id="stagingFiles" type="number" value="10" /></div>
+            <div class="field"><label>Prioridade</label><select id="stagingPriority"><option>Baixa</option><option>Normal</option><option>Alta</option></select></div>
+            <div class="field"><label>Substituir Existentes</label><select id="stagingReplace"><option value="false">Não</option><option value="true">Sim</option></select></div>
+            <div class="field"><label>Validar FTP Antes</label><select id="stagingValidate"><option value="true">Sim</option><option value="false">Não</option></select></div>
+          </div>
+          <div class="button-row">
+            <button class="small-btn primary lc-action" id="applyStagingBtn"><i data-lucide="save" width="14"></i>Aplicar Staging</button>
+            <button class="small-btn warn lc-action" data-command="PauseStaging"><i data-lucide="pause" width="14"></i>Pausar</button>
+            <button class="small-btn success lc-action" data-command="ResumeStaging"><i data-lucide="play" width="14"></i>Retomar</button>
+          </div>
+        </article>
+
+        <article class="control-card">
+          <div class="control-title"><h3>Rate Limits</h3><span class="status-inline">Customizável</span></div>
+          <div class="field-grid">
+            <div class="field"><label>RPM</label><input id="rateRpm" type="number" value="13" /></div>
+            <div class="field"><label>RPD</label><input id="rateRpd" type="number" value="1400" /></div>
+            <div class="field"><label>TPM</label><input id="rateTpm" type="number" value="120000" /></div>
+            <div class="field"><label>Intervalo Mínimo</label><input id="rateInterval" type="number" value="5" /></div>
+            <div class="field"><label>Tempo Backoff</label><input id="rateBackoff" type="number" value="5" /></div>
+            <div class="field"><label>Erros Globais</label><input id="rateErrors" type="number" value="3" /></div>
+          </div>
+          <div class="button-row">
+            <button class="small-btn primary lc-action" id="applyRateBtn"><i data-lucide="save" width="14"></i>Aplicar Limites</button>
+            <button class="small-btn warn lc-action" data-command="ActivateBackoff"><i data-lucide="shield-alert" width="14"></i>Activar Backoff</button>
+          </div>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
 </body>
 </html>
