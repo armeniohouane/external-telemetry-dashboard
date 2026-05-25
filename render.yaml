@@ -1,8 +1,35 @@
+################################################################################
+# render.yaml  –  Agente Clientes Irregulares · Dashboard Server (Node.js)
+#
+# SETUP NO RENDER:
+#   1. Push desta pasta para GitHub/GitLab
+#   2. Render → New → Web Service → liga o repositório
+#   3. Runtime: Node  |  Build: npm install  |  Start: npm start
+#   4. Preenche as env vars abaixo no painel do Render
+################################################################################
+
 services:
   - type: web
-    name: external-telemetry-dashboard
-    env: node
-    plan: free
+    name: agente-clientes-dashboard
+    runtime: node
+    plan: free               # muda para "starter" se precisares de uptime garantido
     buildCommand: npm install
     startCommand: npm start
-    autoDeploy: true
+
+    envVars:
+      # ── Obrigatório apenas se quiseres validar a chave do agente ─────────
+      # Coloca a mesma chave que tens em ExternalDashboardOptions.ApiKey
+      # no appsettings do agente C#.
+      - key: AGENT_API_KEY
+        value: ""             # ← preencher no Render Dashboard
+
+      # ── Opcionais ────────────────────────────────────────────────────────
+      - key: COMMAND_QUEUE_TTL   # minutos antes de um comando expirar (default: 10)
+        value: "10"
+      - key: MAX_EVENTS          # máximo de eventos em memória        (default: 500)
+        value: "500"
+      - key: PORT                # porta (o Render injeta automaticamente)
+        fromService:
+          type: web
+          name: agente-clientes-dashboard
+          property: port

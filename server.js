@@ -1,399 +1,478 @@
+/**
+ * server.js  –  Agente Clientes Irregulares · Dashboard Server
+ *
+ * Função: relay entre o agente C# (ExternalDashboardPushHostedService) e o
+ * browser do dashboard.
+ *
+ * Fluxo:
+ *   1. C# agent → POST /api/telemetry (ou /api/push, /api/agent/telemetry…)
+ *      → servidor guarda estado em memória
+ *   2. Browser   → GET /api/dashboard/snapshot|telemetry|events|history
+ *      → servidor devolve estado guardado
+ *   3. Browser   → POST /api/live-control/command
+ *      → servidor coloca comando na fila
+ *   4. C# agent  → GET /api/commands
+ *      → servidor devolve fila de comandos pendentes
+ *   5. C# agent  → POST /api/commands/:id/ack
+ *      → servidor limpa o comando confirmado
+ *   6. C# agent  → POST /api/history/sync  (histórico SQL)
+ *      → servidor guarda histórico separado
+ *
+ * Variáveis de ambiente (.env ou Render Dashboard):
+ *   PORT              Porta do servidor               (default: 3000)
+ *   AGENT_API_KEY     Chave que o agente envia como   (default: sem validação)
+ *                     X-Api-Key / Authorization Bearer
+ *   COMMAND_QUEUE_TTL Minutos até um comando expirar  (default: 10)
+ *   MAX_EVENTS        Máximo de eventos em memória    (default: 500)
+ */
 
 'use strict';
 
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+const express  = require('express');
+const path     = require('path');
+const crypto   = require('crypto');
 
-const PORT = Number(process.env.PORT || 8080);
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 25 * 1024 * 1024);
-const HISTORY_RETENTION_HOURS = Number(process.env.HISTORY_RETENTION_HOURS || 24);
-const MAX_HISTORY = Number(process.env.MAX_HISTORY || process.env.MAX_HISTORY_ITEMS || 20000);
-const MAX_DB_HISTORY = Number(process.env.MAX_DB_HISTORY || 5000);
-const MAX_COMMANDS = Number(process.env.MAX_COMMANDS || 300);
-const MAX_LOGS = Number(process.env.MAX_LOGS || 300);
+const app  = express();
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
-// Dashboard externo: memória apenas. Não lê nem escreve ficheiros de persistência.
-// Se o Render reiniciar/redeployar, latest/histórico/comandos desaparecem, mas a recepção em tempo real continua sem I/O local.
-const REQUIRE_TELEMETRY_KEY = String(process.env.REQUIRE_TELEMETRY_KEY || 'false').toLowerCase() === 'true';
-const TELEMETRY_KEY = process.env.TELEMETRY_KEY || process.env.DASHBOARD_SHARED_SECRET || process.env.API_KEY || '';
-const LIVE_CONTROL_PASSWORD = process.env.LIVE_CONTROL_PASSWORD || 'Zeus';
-const REQUIRE_COMMAND_SECRET = String(process.env.REQUIRE_COMMAND_SECRET || 'false').toLowerCase() === 'true';
+/* ═══════════════════════════════════════════════════════════════════════════
+   CONFIGURAÇÃO
+   ═══════════════════════════════════════════════════════════════════════════ */
+const AGENT_API_KEY     = (process.env.AGENT_API_KEY || '').trim();
+const COMMAND_QUEUE_TTL = parseInt(process.env.COMMAND_QUEUE_TTL || '10', 10) * 60 * 1000;
+const MAX_EVENTS        = parseInt(process.env.MAX_EVENTS || '500', 10);
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ESTADO EM MEMÓRIA
+   ═══════════════════════════════════════════════════════════════════════════ */
 const store = {
-  latest: null,
-  latestReceivedAt: null,
-  latestRawBody: null,
-  history: [], // { receivedAt, item }
-  dbHistory: [], // { receivedAt, item }
-  commands: [],
-  logs: []
+  /* Último payload completo enviado pelo agente C# */
+  payload: null,
+
+  /* Histórico SQL sincronizado por POST /api/history/sync */
+  sqlHistory: null,
+
+  /* Fila de comandos pendentes para o agente ir buscar */
+  commandQueue: [],
+
+  /* IDs de comandos já confirmados (evita re-aplicação) */
+  acknowledgedIds: new Set(),
+
+  /* Métricas de push */
+  pushCount:   0,
+  lastPushAt:  null,
+  lastPushIp:  null,
 };
-const eventClients = new Set();
 
-function normalizePathname(value) {
-  const clean = String(value || '/').replace(/\/+/g, '/');
-  if (clean === '/') return '/';
-  return clean.replace(/\/$/, '') || '/';
-}
-
-function sendJson(res, statusCode, payload, extraHeaders = {}) {
-  res.writeHead(statusCode, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Telemetry-Key,X-Dashboard-Secret,X-Control-Password,X-Live-Control-Password,X-RPA-Source,X-RPA-Instance',
-    'Access-Control-Expose-Headers': 'X-Latest-Received-At',
-    'X-Content-Type-Options': 'nosniff',
-    ...extraHeaders
-  });
-  res.end(JSON.stringify(payload, null, 2));
-}
-
-function sendFile(res, filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  const types = {
-    '.html': 'text/html; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.js': 'application/javascript; charset=utf-8',
-    '.json': 'application/json; charset=utf-8',
-    '.svg': 'image/svg+xml',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.ico': 'image/x-icon'
-  };
-
-  fs.readFile(filePath, (err, data) => {
-    if (err) return sendJson(res, 404, { ok: false, error: 'Not found' });
-    res.writeHead(200, {
-      'Content-Type': types[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff'
-    });
-    res.end(data);
-  });
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    const chunks = [];
-    req.on('data', chunk => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(new Error(`Payload demasiado grande. Limite actual: ${MAX_BODY_BYTES} bytes.`));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
-}
-
-function safeParseJson(text) {
-  try { return JSON.parse(text || '{}'); }
-  catch { return { rawBody: String(text || ''), parseWarning: 'JSON inválido recebido; mantido como texto bruto.' }; }
-}
-
-function text(value, fallback = null) {
-  if (value === undefined || value === null || value === '') return fallback;
-  return String(value);
-}
-
-function number(value, fallback = 0) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function pick(obj, ...keys) {
-  for (const key of keys) {
-    if (obj && obj[key] !== undefined && obj[key] !== null) return obj[key];
-  }
-  return undefined;
-}
-
-function normalizeRuntime(value) {
-  const raw = String(value || 'web').toLowerCase();
-  if (raw.includes('api')) return 'api';
-  return 'web';
-}
-
-function isAuthorized(req) {
-  if (!TELEMETRY_KEY) return !REQUIRE_TELEMETRY_KEY;
-  const auth = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  return [req.headers['x-telemetry-key'], req.headers['x-dashboard-secret'], auth].some(v => String(v || '') === TELEMETRY_KEY);
-}
-
-function isControlAuthorized(req, payload = {}) {
-  return [
-    payload.controlPassword,
-    payload.password,
-    payload.liveControlPassword,
-    req.headers['x-control-password'],
-    req.headers['x-live-control-password']
-  ].some(v => String(v || '') === LIVE_CONTROL_PASSWORD);
-}
-
-function broadcast(event) {
-  const data = `data: ${JSON.stringify(event)}\n\n`;
-  for (const res of [...eventClients]) {
-    try { res.write(data); } catch { eventClients.delete(res); }
-  }
-}
-
-function addLog(level, message, extra = {}) {
-  const item = { type: 'log', timestamp: new Date().toISOString(), level, message, ...extra };
-  store.logs.push(item);
-  store.logs = store.logs.slice(-MAX_LOGS);
-  broadcast(item);
-}
-
-async function handleJson(req, res, handler) {
-  let raw;
-  try { raw = await readBody(req); }
-  catch (error) { return sendJson(res, 413, { ok: false, error: error.message }); }
-  const parsed = safeParseJson(raw);
-  return handler(parsed, raw);
-}
-
-function itemTimestamp(item, fallback = null) {
-  const value = pick(
-    item,
-    'dataHoraOrigem', 'heartbeat', 'receivedAt', 'ultimaAtualizacao',
-    'Data_Hora_Inicio', 'Data_Hora_Fim', 'Criado_Em', 'DataHoraInicio', 'DataHoraFim'
-  );
-  const date = value ? new Date(value) : null;
-  if (date && !Number.isNaN(date.getTime())) return date.toISOString();
-  return fallback || new Date().toISOString();
-}
-
-function pruneHistory() {
-  const cutoff = Date.now() - HISTORY_RETENTION_HOURS * 60 * 60 * 1000;
-  const keepRecent = record => {
-    const date = new Date(record.receivedAt || itemTimestamp(record.item));
-    return !Number.isNaN(date.getTime()) && date.getTime() >= cutoff;
-  };
-
-  store.history = store.history.filter(keepRecent).slice(-MAX_HISTORY);
-  store.dbHistory = store.dbHistory.filter(keepRecent).slice(-MAX_DB_HISTORY);
-}
-
-function getExecutionId(item) {
-  const value = pick(item, 'idExecucao', 'Id_Execucao', 'id_execucao', 'IdExecucao');
-  return value === undefined || value === null || value === '' ? null : String(value);
-}
-
-function mergedHistoryItems(limit = MAX_HISTORY) {
-  pruneHistory();
-  const all = store.history.map(x => ({ ...x, source: 'telemetry' }))
-    .concat(store.dbHistory.map(x => ({ ...x, source: 'sql' })));
-
-  // Dedupe só para linhas SQL da mesma execução quando chegam vários syncs; telemetria em tempo real mantém pontos de evolução.
-  const seenDb = new Set();
-  const result = [];
-  for (const record of all.slice().reverse()) {
-    const item = record.item;
-    const id = getExecutionId(item);
-    if (record.source === 'sql' && id) {
-      if (seenDb.has(id)) continue;
-      seenDb.add(id);
-    }
-    result.push(item);
-  }
-
-  return result
-    .sort((a, b) => new Date(itemTimestamp(a)).getTime() - new Date(itemTimestamp(b)).getTime())
-    .slice(-limit);
-}
-
-function createCommand(payload) {
-  const parameters = payload.parameters && typeof payload.parameters === 'object' ? { ...payload.parameters } : {};
-  delete parameters.password;
-  delete parameters.controlPassword;
-  delete parameters.liveControlPassword;
+/* ── Defaults para quando ainda não chegou nenhum push ────────────────────── */
+function emptySnapshot(runtime) {
   return {
-    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
-    createdAt: new Date().toISOString(),
-    command: text(pick(payload, 'command', 'tipo', 'Tipo'), 'Unknown'),
-    status: 'Pendente',
-    requestedBy: text(pick(payload, 'requestedBy', 'solicitadoPor'), 'Dashboard'),
-    reason: text(pick(payload, 'reason', 'motivo'), ''),
-    runtime: normalizeRuntime(pick(payload, 'runtime', 'Runtime')),
-    runtimeApplyMode: text(pick(payload, 'runtimeApplyMode', 'RuntimeApplyMode'), null),
-    worker: text(pick(payload, 'worker', 'Worker'), null),
-    parameters,
-    rawPayload: payload
+    instanceName:         'Agente Clientes Irregulares',
+    idExecucao:           '—',
+    estadoSistema:        'Sem dados',
+    modoActual:           '—',
+    runtimeActual:        runtime || 'Web',
+    ultimoHeartbeat:      '—',
+    percentualConcluido:  0,
+    heroMetrics:          [],
+    heroBottom:           [],
+    cardGroups:           [],
+    qualityRows:          [],
+    modelRows:            [],
+    payload:              {},
+    seriesUltimas3h:      { labels: [], processados: [], sucesso: [], naoEncontrado: [], invalidos: [], erros: [] },
+    distribuicaoResultados: { sucesso: 0, naoEncontrado: 0, invalidos: 0, erros: 0 },
+    erros:                { labels: [], values: [] },
   };
 }
 
-function acknowledgeCommand(commandId, payload = {}) {
-  const item = store.commands.find(command => command.id === commandId);
-  if (!item) return null;
-  item.status = text(pick(payload, 'status', 'Status'), 'Processado');
-  item.result = text(pick(payload, 'result', 'Result', 'message', 'Message'), null);
-  item.processedBy = text(pick(payload, 'processedBy', 'ProcessedBy'), 'RPA');
-  item.processedAt = new Date().toISOString();
-  item.ackPayload = payload;
-  return item;
+function emptyTelemetry() {
+  return { groups: [] };
 }
 
-function serveStatic(res, pathname) {
-  const safePath = pathname === '/' ? '/index.html' : pathname;
-  const filePath = path.normalize(path.join(PUBLIC_DIR, safePath));
-  if (!filePath.startsWith(PUBLIC_DIR)) return sendJson(res, 403, { ok: false, error: 'Forbidden' });
-  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) return sendFile(res, filePath);
-  return sendFile(res, path.join(PUBLIC_DIR, 'index.html'));
+function emptyEvents() {
+  return { idExecucao: '—', items: [] };
 }
 
-const server = http.createServer(async (req, res) => {
-  const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = normalizePathname(requestUrl.pathname);
+function emptyHistory() {
+  return { cards: [], items: [], chart: { labels: [], cifsProcessados: [], taxaSucesso: [] } };
+}
 
-  if (req.method === 'OPTIONS') return sendJson(res, 204, {});
+function emptyLiveControl() {
+  return {
+    modoOperacao:  { modo: 'Automático', respeitarJanela: true, permitirFtpForaDoOnline: false, offlineUsaApenasLocal: true, encerrarNaTroca: 'Após CIF Actual', janelaCustom: '18:00 - 06:00' },
+    apiWorkers:    { numeroWorkers: 0, batchPorWorker: 400, permitirNovosClaims: true, encerrarAposCifActual: false },
+    webWorker:     { activo: true, intervaloPromptSegundos: 20, timeoutRespostaSegundos: 180, maxErrosConsecutivos: 3 },
+    staging:       { activo: true, cifsParaPreparar: 500, maxGbDisco: 20, maxFicheirosPorCif: 10, prioridade: 'Normal', substituirExistentes: false, validarFtpAntes: true },
+    rateLimits:    { rpm: 13, rpd: 1400, tpm: 120000, intervaloMinimoSegundos: 5, tempoBackoffMinutos: 5, errosGlobaisPermitidos: 3 },
+    workers:       [{ workerId: 'WEB_WORKER_01', runtime: 'Web', estado: 'Livre', cifActual: null, campoActual: null }],
+  };
+}
 
-  if (req.method === 'GET' && (pathname === '/api/health' || pathname === '/health')) {
-    pruneHistory();
-    return sendJson(res, 200, {
-      ok: true,
-      status: 'online',
-      service: 'external-telemetry-dashboard',
-      storageMode: 'memory-only-24h',
-      retentionHours: HISTORY_RETENTION_HOURS,
-      latestHeartbeat: store.latest?.heartbeat || null,
-      latestReceivedAt: store.latestReceivedAt || null,
-      historyItems: store.history.length,
-      dbHistoryItems: store.dbHistory.length,
-      commandItems: store.commands.length,
-      telemetryAuthRequired: REQUIRE_TELEMETRY_KEY,
-      time: new Date().toISOString()
-    });
-  }
+/* ═══════════════════════════════════════════════════════════════════════════
+   MIDDLEWARES GLOBAIS
+   ═══════════════════════════════════════════════════════════════════════════ */
 
-  if (req.method === 'GET' && (pathname === '/api/telemetry/latest' || pathname === '/api/latest')) {
-    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only-24h' });
-    return sendJson(res, 200, store.latest, { 'X-Latest-Received-At': store.latestReceivedAt || '' });
-  }
-
-  if (req.method === 'GET' && (pathname === '/api/debug/latest' || pathname === '/api/raw/latest')) {
-    if (!store.latest) return sendJson(res, 404, { status: 'empty', message: 'No telemetry received yet.', storageMode: 'memory-only-24h' });
-    return sendJson(res, 200, { ok: true, storageMode: 'memory-only-24h', receivedAt: store.latestReceivedAt, rawPayload: store.latest, rawBody: store.latestRawBody });
-  }
-
-  if (req.method === 'GET' && pathname === '/api/state') {
-    pruneHistory();
-    return sendJson(res, 200, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, latest: store.latest, historyCount: store.history.length, dbHistoryCount: store.dbHistory.length, commands: store.commands.slice(-50) });
-  }
-
-  if (req.method === 'GET' && (pathname === '/api/telemetry/history' || pathname === '/api/history')) {
-    const defaultTake = Math.min(MAX_HISTORY + MAX_DB_HISTORY, 25000);
-    const take = Math.min(number(requestUrl.searchParams.get('take') || requestUrl.searchParams.get('limit'), defaultTake), defaultTake);
-    const items = mergedHistoryItems(take);
-    if (pathname === '/api/history') return sendJson(res, 200, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, items: items.slice().reverse() });
-    return sendJson(res, 200, items);
-  }
-
-  if (req.method === 'GET' && pathname === '/api/db-history') {
-    const take = Math.min(number(requestUrl.searchParams.get('take'), MAX_DB_HISTORY), MAX_DB_HISTORY);
-    pruneHistory();
-    return sendJson(res, 200, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, items: store.dbHistory.slice(-take).map(x => x.item) });
-  }
-
-  if (req.method === 'GET' && pathname === '/api/commands') {
-    return sendJson(res, 200, store.commands.slice().reverse());
-  }
-
-  if (req.method === 'GET' && pathname === '/api/logs') {
-    const take = Math.min(number(requestUrl.searchParams.get('take'), 120), MAX_LOGS);
-    return sendJson(res, 200, store.logs.slice(-take));
-  }
-
-  if (req.method === 'GET' && pathname === '/api/events') {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-store',
-      Connection: 'keep-alive',
-      'X-Content-Type-Options': 'nosniff',
-      'Access-Control-Allow-Origin': '*'
-    });
-    res.write(': connected\n\n');
-    if (store.latest) res.write(`data: ${JSON.stringify({ type: 'telemetry', latest: store.latest, receivedAt: store.latestReceivedAt })}\n\n`);
-    eventClients.add(res);
-    req.on('close', () => eventClients.delete(res));
-    return;
-  }
-
-  if (req.method === 'POST' && ['/api/telemetry', '/telemetry', '/api/metrics', '/api/state'].includes(pathname)) {
-    if (REQUIRE_TELEMETRY_KEY && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized telemetry write.' });
-    return handleJson(req, res, (parsed, rawBody) => {
-      // Sem normalização de telemetria: o dashboard guarda e devolve exactamente o objecto recebido.
-      const item = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : { rawBody: String(rawBody || '') };
-      const receivedAt = new Date().toISOString();
-      store.latest = item;
-      store.latestReceivedAt = receivedAt;
-      store.latestRawBody = String(rawBody || '');
-      store.history.push({ receivedAt, item });
-      pruneHistory();
-      addLog('INF', `Telemetria recebida | Exec=${item.idExecucao || item.Id_Execucao || '-'} | Estado=${item.estadoFinal || item.Estado_Final || '-'} | Progresso=${item.percentagemConcluida ?? '-'}%`);
-      broadcast({ type: 'telemetry', latest: item, receivedAt });
-      return sendJson(res, 202, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, idExecucao: item.idExecucao || item.Id_Execucao || null, receivedAt, shownInDashboard: true });
-    });
-  }
-
-  if (req.method === 'POST' && pathname === '/api/db-history/sync') {
-    if (REQUIRE_TELEMETRY_KEY && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized history sync.' });
-    return handleJson(req, res, (parsed) => {
-      const rawItems = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : []);
-      const receivedAt = new Date().toISOString();
-      const rows = rawItems
-        .filter(item => item && typeof item === 'object' && !Array.isArray(item));
-
-      for (const item of rows) {
-        store.dbHistory.push({ receivedAt: itemTimestamp(item, receivedAt), item });
-      }
-
-      pruneHistory();
-      addLog('INF', `Histórico SQL sincronizado | Linhas=${rows.length} | Retenção=${HISTORY_RETENTION_HOURS}h`);
-      broadcast({ type: 'db-history', count: rows.length });
-      return sendJson(res, 202, { ok: true, storageMode: 'memory-only-24h', retentionHours: HISTORY_RETENTION_HOURS, rowsReceived: rows.length, rowsStored: store.dbHistory.length, receivedAt });
-    });
-  }
-
-  if (req.method === 'POST' && pathname === '/api/commands') {
-    return handleJson(req, res, (parsed) => {
-      if (REQUIRE_COMMAND_SECRET && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized command write.' });
-      if (!isControlAuthorized(req, parsed || {})) return sendJson(res, 403, { ok: false, error: 'Invalid live control password.' });
-      const item = createCommand(parsed || {});
-      store.commands.push(item);
-      store.commands = store.commands.slice(-MAX_COMMANDS);
-      addLog('INF', `Comando registado | ${item.command}`);
-      broadcast({ type: 'command', command: item });
-      return sendJson(res, 202, item);
-    });
-  }
-
-  if (req.method === 'POST' && pathname.startsWith('/api/commands/') && pathname.endsWith('/ack')) {
-    if (REQUIRE_COMMAND_SECRET && !isAuthorized(req)) return sendJson(res, 401, { ok: false, error: 'Unauthorized command ack.' });
-    const commandId = decodeURIComponent(pathname.split('/')[3] || '');
-    return handleJson(req, res, (parsed) => {
-      const item = acknowledgeCommand(commandId, parsed || {});
-      if (!item) return sendJson(res, 404, { ok: false, error: 'Command not found.' });
-      addLog('INF', `Comando actualizado | ${item.command} | ${item.status}`);
-      broadcast({ type: 'command', command: item });
-      return sendJson(res, 200, { ok: true, command: item });
-    });
-  }
-
-  if (req.method === 'GET') return serveStatic(res, pathname);
-  return sendJson(res, 405, { ok: false, error: 'Method not allowed', method: req.method, pathname });
+/* CORS — permite que o agente C# envie de qualquer origem */
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers',
+    'Content-Type, Authorization, X-Api-Key, X-Telemetry-Key, X-Client, X-Instance-Name, X-Execution-Id');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[INF] Dashboard externo iniciado em http://0.0.0.0:${PORT}`);
-  console.log(`[INF] StorageMode=memory-only-24h | Retention=${HISTORY_RETENTION_HOURS}h | POST /api/telemetry | POST /api/db-history/sync | AuthObrigatoria=${REQUIRE_TELEMETRY_KEY}`);
-  console.log('[INF] Live Control: POST /api/commands | Senha via payload/header');
+app.use(express.json({ limit: '10mb' }));
+
+/* ── Middleware de autenticação para endpoints de push ────────────────────── *
+ * Só activo se AGENT_API_KEY estiver definido.                               *
+ * O agente envia a chave em vários headers; qualquer um válido é aceite.     *
+ * ─────────────────────────────────────────────────────────────────────────── */
+function requireAgentKey(req, res, next) {
+  if (!AGENT_API_KEY) return next();   // sem chave configurada → aceitar tudo
+
+  const bearer = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+  const candidates = [
+    req.headers['x-api-key'],
+    req.headers['x-telemetry-key'],
+    bearer,
+  ].filter(Boolean);
+
+  if (candidates.some(k => k === AGENT_API_KEY)) return next();
+
+  console.warn(`[auth] Push rejeitado de ${req.ip} – chave inválida`);
+  res.status(401).json({ error: 'Chave de API inválida' });
+}
+
+/* ── Logging resumido ─────────────────────────────────────────────────────── */
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    console.log(`${new Date().toISOString()}  ${req.method}  ${req.path}`);
+  }
+  next();
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ENDPOINTS DE PUSH  (chamados pelo ExternalDashboardPushHostedService)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Recebe o payload completo (ExternalDashboardPayloadDto) e actualiza o store.
+ * O C# tenta vários paths por ordem; todos apontam para o mesmo handler.
+ */
+function handleTelemetryPush(req, res) {
+  const body = req.body;
+  if (!body || typeof body !== 'object') {
+    return res.status(400).json({ error: 'Payload inválido' });
+  }
+
+  store.payload    = body;
+  store.pushCount += 1;
+  store.lastPushAt = new Date().toISOString();
+  store.lastPushIp = req.ip;
+
+  /* Se o payload trouxer histórico, guardamos também */
+  if (body.history) store.sqlHistory = body.history;
+
+  console.log(`[push] #${store.pushCount} recebido — instância: ${body.instanceName || '?'} | execução: ${body.idExecucao || '?'}`);
+
+  res.json({
+    ok: true,
+    received: store.pushCount,
+    timestamp: store.lastPushAt,
+    pendingCommands: store.commandQueue.length,
+  });
+}
+
+/* Todos os paths que o ExternalDashboardPushHostedService tenta por POST */
+const pushPaths = [
+  '/api/telemetry',
+  '/api/agent/telemetry',
+  '/api/agent/push',
+  '/api/push',
+];
+
+pushPaths.forEach(p => app.post(p, requireAgentKey, handleTelemetryPush));
+
+/* POST /api/dashboard/telemetry  – POST=push do agente; GET=leitura do browser */
+app.post('/api/dashboard/telemetry', requireAgentKey, handleTelemetryPush);
+
+/* Endpoint raiz (quando EndpointUrl aponta directamente para a origem) */
+app.post('/', requireAgentKey, handleTelemetryPush);
+
+/* ── Histórico SQL ──────────────────────────────────────────────────────── */
+function handleHistorySync(req, res) {
+  const body = req.body;
+  if (!body || typeof body !== 'object') return res.status(400).json({ error: 'Payload inválido' });
+
+  store.sqlHistory = body;
+  console.log(`[history-sync] ${body.syncedAt || '?'} — ${(body.items || []).length} linhas`);
+  res.json({ ok: true, received: (body.items || []).length });
+}
+
+['/api/history/sync', '/api/sql-history', '/api/history'].forEach(p =>
+  app.post(p, requireAgentKey, handleHistorySync)
+);
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ENDPOINTS DE COMANDO  (polling pelo C# + ACK)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * GET /api/commands  (e aliases)
+ * O agente faz polling aqui. Devolvemos os comandos pendentes que ainda
+ * não foram confirmados. O agente usa o campo "id" para ACK posterior.
+ */
+function handleCommandPoll(req, res) {
+  purgeStalCommands();
+
+  const instanceName = req.query.instanceName || req.query.instance || '*';
+  const idExecucao   = req.query.idExecucao   || '*';
+
+  const pending = store.commandQueue.filter(cmd => {
+    if (store.acknowledgedIds.has(cmd.id)) return false;
+    /* Filtragem opcional por instância/execução */
+    if (instanceName !== '*' && cmd.instanceName && cmd.instanceName !== instanceName) return false;
+    return true;
+  });
+
+  console.log(`[commands] poll de ${instanceName}/${idExecucao} — ${pending.length} pendente(s)`);
+  res.json(pending);
+}
+
+[
+  '/api/commands',
+  '/api/live-control/commands',
+  '/api/agent/commands',
+  '/api/control/commands',
+].forEach(p => app.get(p, handleCommandPoll));
+
+/**
+ * POST /api/commands/:commandId/ack
+ * O agente confirma que aplicou o comando.
+ */
+app.post('/api/commands/:commandId/ack', requireAgentKey, (req, res) => {
+  const { commandId } = req.params;
+  const body = req.body || {};
+
+  store.acknowledgedIds.add(commandId);
+  store.commandQueue = store.commandQueue.filter(c => c.id !== commandId);
+
+  console.log(`[ack] comando ${commandId} confirmado — ${body.command || '?'} aplicado em ${body.appliedAt || '?'}`);
+  res.json({ ok: true, commandId });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ENDPOINTS DO DASHBOARD FRONTEND
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* GET /api/dashboard/health */
+app.get('/api/dashboard/health', (req, res) => {
+  const p = store.payload;
+  res.json({
+    status:       p ? 'online' : 'sem dados',
+    instanceName: p?.instanceName || '—',
+    idExecucao:   p?.idExecucao   || '—',
+    pushCount:    store.pushCount,
+    lastPushAt:   store.lastPushAt || '—',
+    serverTime:   new Date().toLocaleString('pt-PT'),
+    pendingCommands: store.commandQueue.length,
+  });
+});
+
+/* GET /api/dashboard/snapshot?runtime= */
+app.get('/api/dashboard/snapshot', (req, res) => {
+  const runtime  = req.query.runtime || 'Web';
+  const p = store.payload;
+
+  if (!p || !p.snapshot) {
+    return res.json(emptySnapshot(runtime));
+  }
+
+  /* O C# gera o snapshot com base no runtime solicitado; aqui devolvemos
+     o snapshot do último push (o backend já aplica o filtro de runtime).
+     Injectamos o runtime pedido caso o campo não venha preenchido.        */
+  const snap = { ...p.snapshot, runtimeActual: p.snapshot.runtimeActual || runtime };
+  res.json(snap);
+});
+
+/* GET /api/dashboard/telemetry */
+app.get('/api/dashboard/telemetry', (req, res) => {
+  const p = store.payload;
+  res.json(p?.telemetry || emptyTelemetry());
+});
+
+/* GET /api/dashboard/events?take= */
+app.get('/api/dashboard/events', (req, res) => {
+  const take = parseInt(req.query.take || '100', 10);
+  const p    = store.payload;
+
+  if (!p?.events) return res.json(emptyEvents());
+
+  const items = Array.isArray(p.events.items)
+    ? p.events.items.slice(-take)
+    : [];
+
+  res.json({ ...p.events, items });
+});
+
+/* GET /api/dashboard/history */
+app.get('/api/dashboard/history', (req, res) => {
+  const p = store.payload;
+
+  /* Preferência: histórico do payload, fallback para sqlHistory */
+  const history = p?.history || store.sqlHistory;
+  if (!history) return res.json(emptyHistory());
+
+  /* Se o histórico vier do sync SQL (formato raw de linhas da BD),
+     convertemos para o formato que o frontend espera.                  */
+  if (history.items && Array.isArray(history.items) && history.items[0]?.IdExecucao !== undefined) {
+    return res.json(formatSqlHistory(history));
+  }
+
+  res.json(history);
+});
+
+/* GET /api/dashboard/export */
+app.get('/api/dashboard/export', (req, res) => {
+  const take           = parseInt(req.query.take || '100', 10);
+  const includeHistory = req.query.includeHistory === 'true';
+  const p              = store.payload;
+
+  if (!p) return res.json({ ok: false, message: 'Sem dados disponíveis' });
+
+  const events = p.events?.items ? { ...p.events, items: p.events.items.slice(-take) } : emptyEvents();
+
+  res.json({
+    instanceName: p.instanceName,
+    idExecucao:   p.idExecucao,
+    exportedAt:   new Date().toLocaleString('pt-PT'),
+    pushCount:    store.pushCount,
+    lastPushAt:   store.lastPushAt,
+    health:       p.health,
+    snapshot:     p.snapshot   || emptySnapshot('Web'),
+    telemetry:    p.telemetry  || emptyTelemetry(),
+    events,
+    liveControl:  p.liveControl || emptyLiveControl(),
+    history:      includeHistory ? (p.history || store.sqlHistory || emptyHistory()) : null,
+  });
+});
+
+/* ── Live Control ─────────────────────────────────────────────────────────── */
+
+/* GET /api/live-control/state */
+app.get('/api/live-control/state', (req, res) => {
+  const p = store.payload;
+  res.json(p?.liveControl || emptyLiveControl());
+});
+
+/**
+ * POST /api/live-control/command
+ * Chamado pelo browser. Coloca o comando na fila para o agente ir buscar.
+ * A autenticação com senha é feita no browser (app.js); aqui apenas
+ * aceitamos o comando e colocamos na fila.
+ */
+app.post('/api/live-control/command', (req, res) => {
+  const { command, payload } = req.body || {};
+
+  if (!command || typeof command !== 'string') {
+    return res.status(400).json({ ok: false, message: 'Campo "command" é obrigatório' });
+  }
+
+  purgeStalCommands();
+
+  const id = crypto.randomUUID();
+  const queued = {
+    id,
+    command,
+    payload:    payload || {},
+    queuedAt:   new Date().toISOString(),
+    expiresAt:  new Date(Date.now() + COMMAND_QUEUE_TTL).toISOString(),
+    instanceName: store.payload?.instanceName || '*',
+  };
+
+  store.commandQueue.push(queued);
+  console.log(`[command] "${command}" adicionado à fila — id: ${id}`);
+
+  res.json({
+    ok:      true,
+    id,
+    message: `Comando "${command}" colocado na fila. Será aplicado na próxima poll do agente.`,
+    pendingCommands: store.commandQueue.length,
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UTILITÁRIOS INTERNOS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Remove comandos cujo TTL expirou */
+function purgeStalCommands() {
+  const now = Date.now();
+  const before = store.commandQueue.length;
+  store.commandQueue = store.commandQueue.filter(c => new Date(c.expiresAt).getTime() > now);
+  const removed = before - store.commandQueue.length;
+  if (removed > 0) console.log(`[queue] ${removed} comando(s) expirado(s) removidos`);
+}
+
+/** Converte histórico SQL raw (formato TabelaVarredura) para o formato do frontend */
+function formatSqlHistory(history) {
+  const items = (history.items || []).map(row => ({
+    idExecucao:      row.IdExecucao || '—',
+    data:            row.DataHoraInicio || '—',
+    modo:            row.Modo || '—',
+    runtime:         row.Runtime || '—',
+    estado:          row.EstadoFinal || row.EstadoSistema || '—',
+    cifsProcessados: row.CifsProcessados ?? 0,
+    taxaSucesso:     row.TaxaSucesso != null ? `${Number(row.TaxaSucesso).toFixed(1)}%` : '—',
+    erros:           row.CifsComErro ?? 0,
+    duracao:         calcDuration(row.DataHoraInicio, row.DataHoraFim),
+  }));
+
+  const chart = {
+    labels:          items.map(r => r.idExecucao.slice(-6)),
+    cifsProcessados: items.map(r => r.cifsProcessados),
+    taxaSucesso:     items.map(r => parseFloat(r.taxaSucesso) || 0),
+  };
+
+  return { cards: [], items, chart };
+}
+
+function calcDuration(start, end) {
+  if (!start || !end) return '—';
+  try {
+    const diff = new Date(end) - new Date(start);
+    if (isNaN(diff) || diff < 0) return '—';
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+  } catch { return '—'; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FICHEIROS ESTÁTICOS  (o próprio dashboard)
+   ═══════════════════════════════════════════════════════════════════════════ */
+app.use(express.static(path.join(__dirname, 'public')));
+
+/* SPA fallback — qualquer rota desconhecida devolve index.html */
+app.get('*', (req, res) => {
+  const indexPath = path.join(__dirname, 'public', 'index.html');
+  res.sendFile(indexPath, err => {
+    if (err) res.status(404).send('Not found');
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ARRANQUE
+   ═══════════════════════════════════════════════════════════════════════════ */
+app.listen(PORT, () => {
+  console.log('═══════════════════════════════════════════════════');
+  console.log(' Agente Clientes Irregulares · Dashboard Server');
+  console.log(`  http://localhost:${PORT}`);
+  console.log(`  API key:    ${AGENT_API_KEY ? '✓ configurada' : '— sem validação'}`);
+  console.log(`  Command TTL: ${COMMAND_QUEUE_TTL / 60000} min`);
+  console.log(`  Max events:  ${MAX_EVENTS}`);
+  console.log('═══════════════════════════════════════════════════');
 });
