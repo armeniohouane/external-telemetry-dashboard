@@ -193,7 +193,7 @@ function renderExecutionChart(series) {
   const theme = apexTheme();
   mountChart('executionChart', {
     chart: { type: 'line', height: 260, toolbar: { show: false }, foreColor: 'rgba(255,255,255,.78)' },
-    theme: { mode: theme },
+    theme: { mode: 'dark' },
     colors: [cssVar('--blue'), cssVar('--green'), cssVar('--orange'), cssVar('--purple'), cssVar('--red')],
     stroke: { curve: 'smooth', width: 3 },
     markers: { size: 0, hover: { size: 5 } },
@@ -217,7 +217,7 @@ function renderDonut(distribution) {
   document.getElementById('donutTotal').textContent = values.reduce((a, v) => a + v, 0);
   mountChart('donutChart', {
     chart: { type: 'donut', height: 260, foreColor: 'rgba(255,255,255,.78)' },
-    theme: { mode: theme },
+    theme: { mode: 'dark' },
     labels: ['Sucesso', 'Não Encontrado', 'Inválido', 'Erro'],
     colors: [cssVar('--green'), cssVar('--orange'), cssVar('--purple'), cssVar('--red')],
     series: values,
