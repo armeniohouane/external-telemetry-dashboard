@@ -510,11 +510,43 @@ function bindControls() {
   );
 }
 
+
+function renderRestrictedSections() {
+  const restricted = `
+    <div class="restricted-box">
+      <strong>Secção restrita</strong>
+      <span>Faça login para visualizar logs, payload, histórico, telemetria e Live Control.</span>
+      <button class="small-btn primary" onclick="showAuthOverlay()"><i data-lucide="log-in" width="14"></i>Entrar</button>
+    </div>`;
+
+  const timeline = document.getElementById('timeline');
+  if (timeline) timeline.innerHTML = restricted;
+  const payload = document.getElementById('payloadBlock');
+  if (payload) payload.textContent = 'Payload restrito. Faça login para visualizar.';
+  const historyBody = document.getElementById('historyBody');
+  if (historyBody) historyBody.innerHTML = '<tr><td colspan="9">Histórico restrito. Faça login para visualizar.</td></tr>';
+  const telemetryGrid = document.getElementById('telemetryGrid');
+  if (telemetryGrid) telemetryGrid.innerHTML = restricted;
+  const workersList = document.getElementById('workersList');
+  if (workersList) workersList.innerHTML = restricted;
+
+  document.querySelectorAll('#live-control button, #live-control input, #live-control select').forEach(el => {
+    if (el.id !== 'loginOpenBtn') el.disabled = true;
+  });
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    GLOBAL REFRESH
    ═══════════════════════════════════════════════════════════════════════════ */
 async function refreshAll() {
   try {
+    if (!dashboardAuthenticated) {
+      await loadSnapshot();
+      renderRestrictedSections();
+      createIcons();
+      return;
+    }
+
     await Promise.all([
       loadSnapshot(),
       loadEvents(),
@@ -525,7 +557,9 @@ async function refreshAll() {
     createIcons();
   } catch (error) {
     console.error(error);
-    document.getElementById('statusMessage').textContent = 'Erro ao carregar dados do backend';
+    document.getElementById('statusMessage').textContent = dashboardAuthenticated
+      ? 'Erro ao carregar dados do backend'
+      : 'Visualização pública limitada. Faça login para ver detalhes.';
   }
 }
 
@@ -537,6 +571,12 @@ function bindNavigation() {
       document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById(btn.dataset.view).classList.add('active');
+      if (!dashboardAuthenticated && btn.dataset.view !== 'tempo-real') {
+        renderRestrictedSections();
+        showAuthOverlay();
+        createIcons();
+        return;
+      }
       await refreshAll();
     });
   });
@@ -562,18 +602,24 @@ function bindTheme() {
 /* ═══════════════════════════════════════════════════════════════════════════
    BOOT
    ═══════════════════════════════════════════════════════════════════════════ */
-runtimeSelect.addEventListener('change', loadSnapshot);
+runtimeSelect.addEventListener('change', () => { loadSnapshot().catch(console.error); });
 refreshBtn.addEventListener('click', refreshAll);
 bindNavigation();
 bindTheme();
 bindControls();
-refreshAll();
+
+(async function boot() {
+  createIcons();
+  const ok = await ensureDashboardAuth();
+  if (!ok) renderRestrictedSections();
+  await refreshAll();
+})();
 
 /* Polling intervals */
 setInterval(() => {
   loadSnapshot().catch(console.error);
-  loadEvents().catch(console.error);
+  if (dashboardAuthenticated) loadEvents().catch(console.error);
 }, 3000);
-setInterval(() => loadTelemetry().catch(console.error), 5000);
-
-createIcons();
+setInterval(() => {
+  if (dashboardAuthenticated) loadTelemetry().catch(console.error);
+}, 5000);

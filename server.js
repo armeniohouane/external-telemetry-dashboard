@@ -42,6 +42,17 @@ const AGENT_API_KEY     = (process.env.AGENT_API_KEY || '').trim();
 const COMMAND_QUEUE_TTL = parseInt(process.env.COMMAND_QUEUE_TTL || '10', 10) * 60 * 1000;
 const MAX_EVENTS        = parseInt(process.env.MAX_EVENTS || '500', 10);
 
+/* ── Dashboard Login/Auth ───────────────────────────────────────────────── */
+const DASHBOARD_USERS = new Set(
+  (process.env.DASHBOARD_USERS || 'X000000,X251682,X002336')
+    .split(',')
+    .map(u => u.trim().toUpperCase())
+    .filter(Boolean)
+);
+const DASHBOARD_PASSWORD = (process.env.DASHBOARD_PASSWORD || 'Zeux').trim();
+const DASHBOARD_SESSION_TTL = parseInt(process.env.DASHBOARD_SESSION_TTL || '480', 10) * 60 * 1000;
+const dashboardSessions = new Map();
+
 /* ═══════════════════════════════════════════════════════════════════════════
    ESTADO EM MEMÓRIA
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -182,6 +193,8 @@ function handleTelemetryPush(req, res) {
     received: store.pushCount,
     timestamp: store.lastPushAt,
     pendingCommands: store.commandQueue.length,
+    authenticated: hasDashboardAuth(req),
+    publicView: !hasDashboardAuth(req),
   });
 }
 
@@ -263,6 +276,44 @@ app.post('/api/commands/:commandId/ack', requireAgentKey, (req, res) => {
   res.json({ ok: true, commandId });
 });
 
+
+/* ── Public/minimal dashboard helpers ───────────────────────────────────── */
+function hasDashboardAuth(req) {
+  return !!getDashboardSession(req);
+}
+
+function minimalSnapshot(snapshot, runtime) {
+  const snap = snapshot || emptySnapshot(runtime);
+  const allowedHeroBottom = (snap.heroBottom || []).filter(row => {
+    const label = String(row.label || '').toLowerCase();
+    return !label.includes('cif') && !label.includes('campo');
+  });
+
+  return {
+    instanceName: snap.instanceName || 'Agente Clientes Irregulares',
+    idExecucao: snap.idExecucao || '—',
+    estadoSistema: snap.estadoSistema || 'Sem dados',
+    modoActual: snap.modoActual || '—',
+    runtimeActual: snap.runtimeActual || runtime || 'Web',
+    ultimoHeartbeat: snap.ultimoHeartbeat || '—',
+    percentualConcluido: snap.percentualConcluido || 0,
+    heroMetrics: snap.heroMetrics || [],
+    heroBottom: allowedHeroBottom,
+    cardGroups: [],
+    qualityRows: [],
+    modelRows: [],
+    payload: {},
+    seriesUltimas3h: snap.seriesUltimas3h || { labels: [], processados: [], sucesso: [], naoEncontrado: [], invalidos: [], erros: [] },
+    distribuicaoResultados: snap.distribuicaoResultados || { sucesso: 0, naoEncontrado: 0, invalidos: 0, erros: 0 },
+    erros: { labels: [], values: [] },
+    publicView: true,
+  };
+}
+
+function restrictedMessage() {
+  return { ok: false, authenticated: false, restricted: true, message: 'Autenticação necessária para consultar esta secção.' };
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    ENDPOINTS DO DASHBOARD FRONTEND
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -283,28 +334,25 @@ app.get('/api/dashboard/health', (req, res) => {
 
 /* GET /api/dashboard/snapshot?runtime= */
 app.get('/api/dashboard/snapshot', (req, res) => {
-  const runtime  = req.query.runtime || 'Web';
+  const runtime = req.query.runtime || 'Web';
   const p = store.payload;
+  const snap = p?.snapshot ? { ...p.snapshot, runtimeActual: p.snapshot.runtimeActual || runtime } : emptySnapshot(runtime);
 
-  if (!p || !p.snapshot) {
-    return res.json(emptySnapshot(runtime));
+  if (!hasDashboardAuth(req)) {
+    return res.json(minimalSnapshot(snap, runtime));
   }
 
-  /* O C# gera o snapshot com base no runtime solicitado; aqui devolvemos
-     o snapshot do último push (o backend já aplica o filtro de runtime).
-     Injectamos o runtime pedido caso o campo não venha preenchido.        */
-  const snap = { ...p.snapshot, runtimeActual: p.snapshot.runtimeActual || runtime };
   res.json(snap);
 });
 
 /* GET /api/dashboard/telemetry */
-app.get('/api/dashboard/telemetry', (req, res) => {
+app.get('/api/dashboard/telemetry', requireDashboardAuth, (req, res) => {
   const p = store.payload;
   res.json(p?.telemetry || emptyTelemetry());
 });
 
 /* GET /api/dashboard/events?take= */
-app.get('/api/dashboard/events', (req, res) => {
+app.get('/api/dashboard/events', requireDashboardAuth, (req, res) => {
   const take = parseInt(req.query.take || '100', 10);
   const p    = store.payload;
 
@@ -318,15 +366,13 @@ app.get('/api/dashboard/events', (req, res) => {
 });
 
 /* GET /api/dashboard/history */
-app.get('/api/dashboard/history', (req, res) => {
-  const p = store.payload;
-
-  /* Preferência: histórico do payload, fallback para sqlHistory */
-  const history = p?.history || store.sqlHistory;
+app.get('/api/dashboard/history', requireDashboardAuth, (req, res) => {
+  /* Preferência: histórico SQL sincronizado da tabela Worker.
+     Fallback: histórico vindo no payload completo, se existir. */
+  const history = store.sqlHistory || store.payload?.history;
   if (!history) return res.json(emptyHistory());
 
-  /* Se o histórico vier do sync SQL (formato raw de linhas da BD),
-     convertemos para o formato que o frontend espera.                  */
+  /* Se vier como linhas raw da BD/tabela Worker, converter para o formato do frontend. */
   if (history.items && Array.isArray(history.items) && history.items[0]?.IdExecucao !== undefined) {
     return res.json(formatSqlHistory(history));
   }
@@ -335,7 +381,7 @@ app.get('/api/dashboard/history', (req, res) => {
 });
 
 /* GET /api/dashboard/export */
-app.get('/api/dashboard/export', (req, res) => {
+app.get('/api/dashboard/export', requireDashboardAuth, (req, res) => {
   const take           = parseInt(req.query.take || '100', 10);
   const includeHistory = req.query.includeHistory === 'true';
   const p              = store.payload;
@@ -362,7 +408,7 @@ app.get('/api/dashboard/export', (req, res) => {
 /* ── Live Control ─────────────────────────────────────────────────────────── */
 
 /* GET /api/live-control/state */
-app.get('/api/live-control/state', (req, res) => {
+app.get('/api/live-control/state', requireDashboardAuth, (req, res) => {
   const p = store.payload;
   res.json(p?.liveControl || emptyLiveControl());
 });
@@ -373,7 +419,7 @@ app.get('/api/live-control/state', (req, res) => {
  * A autenticação com senha é feita no browser (app.js); aqui apenas
  * aceitamos o comando e colocamos na fila.
  */
-app.post('/api/live-control/command', (req, res) => {
+app.post('/api/live-control/command', requireDashboardAuth, (req, res) => {
   const { command, payload } = req.body || {};
 
   if (!command || typeof command !== 'string') {

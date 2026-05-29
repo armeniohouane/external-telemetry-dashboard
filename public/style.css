@@ -210,3 +210,18 @@ body.dark .live-control-notice { color: var(--orange); }
   .log-line, .worker-row { grid-template-columns: 1fr; }
   .badge { justify-self: start; }
 }
+
+.restricted-box {
+  border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line));
+  background: color-mix(in srgb, var(--orange) 9%, var(--surface));
+  color: var(--text);
+  border-radius: 16px;
+  padding: 18px;
+  font-size: 13px;
+  font-weight: 750;
+  display: grid;
+  gap: 10px;
+}
+.restricted-box strong { font-size: 15px; }
+body.public-view #logoutBtn { display: none; }
+body:not(.public-view) #loginOpenBtn { display: none; }
