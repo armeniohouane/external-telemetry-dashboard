@@ -19,17 +19,17 @@
 </head>
 <body>
 
-  <!-- ─── Auth modal (Page-level login — apenas matrícula) ────────────── -->
+  <!-- ─── Auth modal (Page-level login — apenas User) ────────────── -->
   <div id="authOverlay" class="auth-overlay" hidden>
     <div class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
       <div class="auth-icon"><i data-lucide="shield-check" width="28"></i></div>
       <h2 id="authTitle">Acesso ao Dashboard</h2>
-      <p>Introduza a sua matrícula para aceder ao painel completo.</p>
+      <p>Introduza o seu User para aceder ao painel completo.</p>
       <div class="auth-field">
-        <label for="authUser">Matrícula</label>
-        <input id="authUser" type="text" placeholder="Ex: X251682" autocomplete="username" />
+        <label for="authUser">User</label>
+        <input id="authUser" type="text" placeholder="Ex: X1233" autocomplete="username" />
       </div>
-      <div id="authError" class="pwd-error" hidden>Matrícula não autorizada. Tente novamente.</div>
+      <div id="authError" class="pwd-error" hidden>User não autorizado. Tente novamente.</div>
       <div class="auth-actions">
         <button id="authSkipBtn" class="small-btn">Continuar sem login</button>
         <button id="authLoginBtn" class="small-btn primary"><i data-lucide="log-in" width="13"></i>Entrar</button>
