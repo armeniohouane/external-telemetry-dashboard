@@ -19,6 +19,25 @@
 </head>
 <body>
 
+  <!-- ─── Auth modal (Page-level login — apenas matrícula) ────────────── -->
+  <div id="authOverlay" class="auth-overlay" hidden>
+    <div class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <div class="auth-icon"><i data-lucide="shield-check" width="28"></i></div>
+      <h2 id="authTitle">Acesso ao Dashboard</h2>
+      <p>Introduza a sua matrícula para aceder ao painel completo.</p>
+      <div class="auth-field">
+        <label for="authUser">Matrícula</label>
+        <input id="authUser" type="text" placeholder="Ex: X251682" autocomplete="username" />
+      </div>
+      <div id="authError" class="pwd-error" hidden>Matrícula não autorizada. Tente novamente.</div>
+      <div class="auth-actions">
+        <button id="authSkipBtn" class="small-btn">Continuar sem login</button>
+        <button id="authLoginBtn" class="small-btn primary"><i data-lucide="log-in" width="13"></i>Entrar</button>
+      </div>
+      <p class="auth-note"><i data-lucide="clock-3" width="12"></i> A sessão expira automaticamente após 10 minutos.</p>
+    </div>
+  </div>
+
   <!-- ─── Password modal (Live Control) ─────────────────────────────────── -->
   <div id="pwdOverlay" class="pwd-overlay" hidden>
     <div class="pwd-modal" role="dialog" aria-modal="true" aria-labelledby="pwdTitle">
@@ -61,6 +80,10 @@
       <div class="toolbar">
         <span class="chip"><span class="dot"></span><span id="systemStateLabel">Activo</span></span>
         <span class="chip real">REAL</span>
+      <button id="authBtn" class="auth-header-btn" title="Login / Logout">
+        <i id="authBtnIcon" data-lucide="log-in" width="14"></i>
+        <span id="authBtnLabel">Entrar</span>
+      </button>
         <select id="runtimeSelect" class="select" aria-label="Runtime">
           <option value="Web" selected>Web · Copilot</option>
           <option value="API + Web">API + Web</option>

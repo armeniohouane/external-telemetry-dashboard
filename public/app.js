@@ -30,10 +30,13 @@ function apexTheme() {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(apiUrl(path), {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  });
+  const token = localStorage.getItem('dashboard_token');
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    ...(options.headers || {}),
+  };
+  const response = await fetch(apiUrl(path), { ...options, headers });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `HTTP ${response.status}`);
@@ -124,6 +127,215 @@ pwdShowBtn.addEventListener('click', () => {
   pwdInput.type = isText ? 'password' : 'text';
   pwdEyeIcon.setAttribute('data-lucide', isText ? 'eye' : 'eye-off');
   createIcons();
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DASHBOARD AUTH  –  login com matrícula, sessão de 10 min
+   ═══════════════════════════════════════════════════════════════════════════
+   O acesso ao dashboard requer apenas a matrícula (sem senha).
+   A senha é usada apenas no Live Control (modal pwdOverlay separado).
+   ─────────────────────────────────────────────────────────────────────── */
+let dashboardAuthenticated = false;
+let _sessionTimer    = null;
+let _sessionCountdown = null;
+
+/* ── Auth DOM refs ──────────────────────────────────────────────────────── */
+const authOverlay   = document.getElementById('authOverlay');
+const authUser      = document.getElementById('authUser');
+const authError     = document.getElementById('authError');
+const authLoginBtn  = document.getElementById('authLoginBtn');
+const authSkipBtn   = document.getElementById('authSkipBtn');
+const authBtn       = document.getElementById('authBtn');
+const authBtnIcon   = document.getElementById('authBtnIcon');
+const authBtnLabel  = document.getElementById('authBtnLabel');
+
+/* ── Token helpers ──────────────────────────────────────────────────────── */
+function getToken()       { return localStorage.getItem('dashboard_token'); }
+function setToken(token)  { localStorage.setItem('dashboard_token', token); }
+function clearToken()     { localStorage.removeItem('dashboard_token'); localStorage.removeItem('dashboard_token_expiry'); }
+
+/* ── Show / Hide auth overlay ───────────────────────────────────────────── */
+function showAuthOverlay() {
+  authUser.value = '';
+  authError.hidden = true;
+  authOverlay.hidden = false;
+  setTimeout(() => authUser.focus(), 80);
+  createIcons();
+}
+
+function hideAuthOverlay() {
+  authOverlay.hidden = true;
+}
+
+/* ── Update header button state ─────────────────────────────────────────── */
+function updateAuthButton() {
+  if (dashboardAuthenticated) {
+    authBtnIcon.setAttribute('data-lucide', 'log-out');
+    authBtnLabel.textContent = 'Sair';
+    authBtn.classList.add('logged-in');
+    document.body.classList.remove('public-view');
+  } else {
+    authBtnIcon.setAttribute('data-lucide', 'log-in');
+    authBtnLabel.textContent = 'Entrar';
+    authBtn.classList.remove('logged-in');
+    document.body.classList.add('public-view');
+  }
+  createIcons();
+}
+
+/* ── Session timer (auto-logout após expirar) ───────────────────────────── */
+function startSessionTimer(expiresInMs) {
+  clearSessionTimer();
+  _sessionTimer = setTimeout(() => {
+    doLogout('Sessão expirada. Introduza a matrícula novamente.');
+  }, expiresInMs);
+}
+
+function clearSessionTimer() {
+  if (_sessionTimer)    { clearTimeout(_sessionTimer);    _sessionTimer    = null; }
+  if (_sessionCountdown) { clearInterval(_sessionCountdown); _sessionCountdown = null; }
+}
+
+/* ── Login (apenas matrícula) ────────────────────────────────────────────── */
+async function doLogin() {
+  const user = authUser.value.trim();
+
+  if (!user) {
+    authError.textContent = 'Introduza a sua matrícula.';
+    authError.hidden = false;
+    return;
+  }
+
+  authLoginBtn.disabled = true;
+  authLoginBtn.textContent = 'A entrar…';
+
+  try {
+    const res = await fetch(apiUrl('/api/auth/login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      authError.textContent = data.message || 'Matrícula não autorizada.';
+      authError.hidden = false;
+      authUser.value = '';
+      authUser.focus();
+      return;
+    }
+
+    /* Sucesso */
+    setToken(data.token);
+    dashboardAuthenticated = true;
+    hideAuthOverlay();
+    updateAuthButton();
+    startSessionTimer(data.expiresIn || 10 * 60 * 1000);
+    await refreshAll();
+
+  } catch (err) {
+    authError.textContent = 'Erro de ligação ao servidor.';
+    authError.hidden = false;
+    console.error('Login error:', err);
+  } finally {
+    authLoginBtn.disabled = false;
+    authLoginBtn.innerHTML = '<i data-lucide="log-in" width="13"></i>Entrar';
+    createIcons();
+  }
+}
+
+/* ── Logout ──────────────────────────────────────────────────────────────── */
+async function doLogout(reason) {
+  try {
+    const token = getToken();
+    if (token) {
+      await fetch(apiUrl('/api/auth/logout'), {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      });
+    }
+  } catch { /* ignorar */ }
+
+  clearToken();
+  clearSessionTimer();
+  dashboardAuthenticated = false;
+  updateAuthButton();
+
+  if (reason) {
+    authError.textContent = reason;
+    authError.hidden = false;
+  }
+
+  showAuthOverlay();
+  renderRestrictedSections();
+  createIcons();
+}
+
+/* ── Verificar sessão existente no arranque ───────────────────────────────── */
+async function ensureDashboardAuth() {
+  const token = getToken();
+  if (!token) {
+    dashboardAuthenticated = false;
+    updateAuthButton();
+    showAuthOverlay();
+    return false;
+  }
+
+  try {
+    const res = await fetch(apiUrl('/api/auth/me'), {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data = await res.json();
+
+    if (res.ok && data.authenticated) {
+      dashboardAuthenticated = true;
+      hideAuthOverlay();
+      updateAuthButton();
+
+      /* Calcular TTL restante */
+      const expiresAt = new Date(data.expiresAt).getTime();
+      const remaining = expiresAt - Date.now();
+      if (remaining > 0) {
+        startSessionTimer(remaining);
+      } else {
+        await doLogout('Sessão expirada.');
+        return false;
+      }
+      return true;
+    }
+  } catch { /* sessão inválida */ }
+
+  clearToken();
+  dashboardAuthenticated = false;
+  updateAuthButton();
+  showAuthOverlay();
+  return false;
+}
+
+/* ── Auth event bindings ─────────────────────────────────────────────────── */
+authLoginBtn.addEventListener('click', doLogin);
+authUser.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+authSkipBtn.addEventListener('click', () => {
+  hideAuthOverlay();
+  renderRestrictedSections();
+});
+
+/* Header auth button: Entrar ou Sair */
+authBtn.addEventListener('click', () => {
+  if (dashboardAuthenticated) {
+    doLogout();
+  } else {
+    showAuthOverlay();
+  }
+});
+
+/* Fechar auth overlay com Escape */
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !authOverlay.hidden) {
+    hideAuthOverlay();
+    renderRestrictedSections();
+  }
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════

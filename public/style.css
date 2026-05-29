@@ -225,3 +225,93 @@ body.dark .live-control-notice { color: var(--orange); }
 .restricted-box strong { font-size: 15px; }
 body.public-view #logoutBtn { display: none; }
 body:not(.public-view) #loginOpenBtn { display: none; }
+
+
+/* ── Auth Overlay (Page Login — apenas matrícula) ─────────────────────── */
+.auth-overlay {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(7,8,10,.82);
+  backdrop-filter: blur(10px);
+  display: grid; place-items: center;
+}
+.auth-overlay[hidden] { display: none; }
+
+.auth-modal {
+  width: min(420px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 36px 28px 24px;
+  box-shadow: 0 28px 64px rgba(0,0,0,.35);
+  text-align: center;
+}
+.auth-icon {
+  width: 56px; height: 56px; border-radius: 16px;
+  background: color-mix(in srgb, var(--green) 11%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--green) 22%, var(--line));
+  color: var(--green);
+  display: grid; place-items: center;
+  margin: 0 auto 16px;
+}
+.auth-modal h2 {
+  margin: 0 0 6px; font-size: 20px; font-weight: 950;
+  letter-spacing: -.04em;
+}
+.auth-modal > p {
+  margin: 0 0 20px; color: var(--muted);
+  font-size: 13px; font-weight: 750;
+}
+.auth-field {
+  text-align: left; margin-bottom: 14px;
+}
+.auth-field label {
+  display: block; margin-bottom: 6px;
+  color: var(--muted); font-size: 11px; font-weight: 950;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.auth-field input {
+  width: 100%; height: 46px; border-radius: 13px;
+  border: 1px solid var(--line); background: var(--surface-2);
+  color: var(--text); padding: 0 16px;
+  font-size: 14px; font-weight: 850; outline: none;
+  transition: border-color .15s;
+}
+.auth-field input:focus { border-color: var(--green); }
+
+.auth-actions {
+  display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px;
+}
+.auth-actions .small-btn { flex: 1; justify-content: center; height: 42px; }
+
+.auth-note {
+  margin: 16px 0 0; color: var(--muted); font-size: 11px;
+  font-weight: 750; display: flex; align-items: center;
+  justify-content: center; gap: 6px;
+}
+
+/* ── Auth Header Button ─────────────────────────────────────────────── */
+.auth-header-btn {
+  height: 36px; border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 0 14px;
+  font-size: 12px; font-weight: 950;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.auth-header-btn:hover {
+  border-color: var(--pink);
+  color: var(--pink);
+}
+.auth-header-btn.logged-in {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 30%, var(--line));
+  background: color-mix(in srgb, var(--green) 8%, var(--surface));
+}
+.auth-header-btn.logged-in:hover {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 30%, var(--line));
+  background: color-mix(in srgb, var(--red) 8%, var(--surface));
+}
