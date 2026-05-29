@@ -38,7 +38,7 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 /* ═══════════════════════════════════════════════════════════════════════════
    CONFIGURAÇÃO
    ═══════════════════════════════════════════════════════════════════════════ */
-const AGENT_API_KEY     = (process.env.AGENT_API_KEY || '').trim();
+const AGENT_API_KEY     = (process.env.AGENT_API_KEY || 'rpa-gemini-2026-chave-provisoria-de-teste').trim();
 const COMMAND_QUEUE_TTL = parseInt(process.env.COMMAND_QUEUE_TTL || '10', 10) * 60 * 1000;
 const MAX_EVENTS        = parseInt(process.env.MAX_EVENTS || '500', 10);
 
