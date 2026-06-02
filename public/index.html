@@ -34,7 +34,6 @@
         <button id="authSkipBtn" class="small-btn">Continuar sem login</button>
         <button id="authLoginBtn" class="small-btn primary"><i data-lucide="log-in" width="13"></i>Entrar</button>
       </div>
-      <p class="auth-note"><i data-lucide="clock-3" width="12"></i> A sessão expira automaticamente após 10 minutos.</p>
     </div>
   </div>
 
@@ -79,8 +78,7 @@
 
       <div class="toolbar">
         <span class="chip"><span class="dot"></span><span id="systemStateLabel">Activo</span></span>
-        <span class="chip real">REAL</span>
-      <button id="authBtn" class="auth-header-btn" title="Login / Logout">
+<button id="authBtn" class="auth-header-btn" title="Login / Logout">
         <i id="authBtnIcon" data-lucide="log-in" width="14"></i>
         <span id="authBtnLabel">Entrar</span>
       </button>
@@ -115,7 +113,7 @@
 
         <div class="hero-chart-grid">
           <article class="hero-chart-panel">
-            <div class="chart-title-row"><span>Evolução Da Execução</span><span>Últimas 3h</span></div>
+            <div class="chart-title-row"><span>Evolução Da Execução</span><span>00h às 24h</span></div>
             <div id="executionChart" class="hero-chart-box"></div>
           </article>
           <article class="hero-chart-panel">
@@ -170,14 +168,29 @@
 
     <!-- ── Histórico ───────────────────────────────────────────────────────── -->
     <section id="historico" class="view">
+      <div class="history-toolbar">
+        <div>
+          <h2 class="history-title">Histórico De Execuções</h2>
+          <p class="history-subtitle">Filtre o período apresentado nos cards, tabela e tendência.</p>
+        </div>
+        <div class="history-range" aria-label="Intervalo do histórico">
+          <button class="range-btn active" data-range="7D">7D</button>
+          <button class="range-btn" data-range="30D">30D</button>
+          <button class="range-btn" data-range="90D">90D</button>
+          <button class="range-btn" data-range="CUSTOM">Custom</button>
+          <input id="historyStart" class="range-date" type="date" hidden />
+          <input id="historyEnd" class="range-date" type="date" hidden />
+          <button id="historyApply" class="range-btn apply" hidden>Aplicar</button>
+        </div>
+      </div>
       <section id="historyCards" class="cards-grid"></section>
       <section class="layout-two">
         <article class="panel">
           <h3 class="panel-title">Histórico De Execuções</h3>
-          <p class="panel-subtitle">Resumo das últimas execuções do agente.</p>
+          <p class="panel-subtitle">Resumo das execuções no intervalo seleccionado.</p>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Id Execução</th><th>Data</th><th>Modo</th><th>Runtime</th><th>Estado</th><th>CIFs</th><th>Sucesso</th><th>Erros</th><th>Duração</th></tr></thead>
+              <thead><tr><th>Id Execução</th><th>Data Início</th><th>Data Fim</th><th>Modo</th><th>Runtime</th><th>Estado</th><th>CIFs</th><th>Sucesso</th><th>Erros</th><th>Duração</th></tr></thead>
               <tbody id="historyBody"></tbody>
             </table>
           </div>

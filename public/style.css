@@ -194,6 +194,32 @@ body.dark .live-control-notice { color: var(--orange); }
 .pwd-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .pwd-actions .small-btn { flex: 1; justify-content: center; height: 42px; }
 
+
+/* ── Histórico: range selector ─────────────────────────────────────────── */
+.history-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.history-title { margin: 0; font-size: 20px; font-weight: 950; letter-spacing: -.04em; }
+.history-subtitle { margin: 4px 0 0; color: var(--muted); font-size: 12px; font-weight: 750; }
+.history-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.range-btn, .range-date {
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 13px;
+  font-size: 12px;
+  font-weight: 950;
+}
+.range-btn { cursor: pointer; }
+.range-btn.active, .range-btn.apply { background: #050506; color: #fff; border-color: #050506; }
+.range-date { border-radius: 11px; outline: none; }
+
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 1280px) {
   .topbar { flex-wrap: wrap; }
@@ -204,6 +230,7 @@ body.dark .live-control-notice { color: var(--orange); }
   .telemetry-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 760px) {
+  .history-toolbar { align-items: flex-start; flex-direction: column; }
   .page { width: min(100% - 20px, 1560px); }
   .nav-tabs, .toolbar { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .hero-metrics, .hero-bottom, .cards-grid, .telemetry-grid, .field-grid, .hero-chart-grid { grid-template-columns: 1fr; }

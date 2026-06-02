@@ -130,7 +130,7 @@ pwdShowBtn.addEventListener('click', () => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   DASHBOARD AUTH  –  login com matrícula, sessão de 10 min
+   DASHBOARD AUTH  –  login com matrícula, sem expiração forçada
    ═══════════════════════════════════════════════════════════════════════════
    O acesso ao dashboard requer apenas a matrícula (sem senha).
    A senha é usada apenas no Live Control (modal pwdOverlay separado).
@@ -183,17 +183,14 @@ function updateAuthButton() {
   createIcons();
 }
 
-/* ── Session timer (auto-logout após expirar) ───────────────────────────── */
-function startSessionTimer(expiresInMs) {
+/* ── Session timer desactivado: a sessão só termina em logout manual ───────── */
+function startSessionTimer() {
   clearSessionTimer();
-  _sessionTimer = setTimeout(() => {
-    doLogout('Sessão expirada. Introduza a matrícula novamente.');
-  }, expiresInMs);
 }
 
 function clearSessionTimer() {
-  if (_sessionTimer)    { clearTimeout(_sessionTimer);    _sessionTimer    = null; }
-  if (_sessionCountdown) { clearInterval(_sessionCountdown); _sessionCountdown = null; }
+  if (_sessionTimer)     { clearTimeout(_sessionTimer);      _sessionTimer = null; }
+  if (_sessionCountdown) { clearInterval(_sessionCountdown);  _sessionCountdown = null; }
 }
 
 /* ── Login (apenas matrícula) ────────────────────────────────────────────── */
@@ -231,7 +228,7 @@ async function doLogin() {
     dashboardAuthenticated = true;
     hideAuthOverlay();
     updateAuthButton();
-    startSessionTimer(data.expiresIn || 10 * 60 * 1000);
+    startSessionTimer();
     await refreshAll();
 
   } catch (err) {
@@ -292,16 +289,8 @@ async function ensureDashboardAuth() {
       dashboardAuthenticated = true;
       hideAuthOverlay();
       updateAuthButton();
-
-      /* Calcular TTL restante */
-      const expiresAt = new Date(data.expiresAt).getTime();
-      const remaining = expiresAt - Date.now();
-      if (remaining > 0) {
-        startSessionTimer(remaining);
-      } else {
-        await doLogout('Sessão expirada.');
-        return false;
-      }
+      /* Sem TTL: mantém a sessão até logout manual. */
+      startSessionTimer();
       return true;
     }
   } catch { /* sessão inválida */ }
@@ -373,6 +362,116 @@ function renderCardGroups(groups) {
   `).join('');
 }
 
+
+function normaliseText(value) {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function isStagingText(value) {
+  const t = normaliseText(value);
+  return t.includes('staging') || t.includes('ftp staging') || t.includes('preparacao staging') || t.includes('reservado staging');
+}
+
+function filterStagingRows(rows) {
+  return (rows || []).filter(row => !isStagingText(`${row.label ?? ''} ${row.value ?? ''}`));
+}
+
+function filterStagingErrorData(errorData = {}) {
+  const labels = errorData.labels || [];
+  const values = errorData.values || [];
+  const filtered = labels.map((label, index) => ({ label, value: values[index] ?? 0 }))
+    .filter(item => !isStagingText(item.label));
+  return { labels: filtered.map(i => i.label), values: filtered.map(i => i.value) };
+}
+
+function asNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const match = String(value ?? '').replace(',', '.').match(/-?\d+(\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+}
+
+function pickFirstNumber(obj, keys) {
+  for (const key of keys) {
+    const value = key.split('.').reduce((acc, part) => acc && acc[part], obj);
+    if (value !== undefined && value !== null && value !== '') return asNumber(value);
+  }
+  return 0;
+}
+
+function distributionTotal(distribution = {}) {
+  return ['sucesso', 'naoEncontrado', 'invalidos', 'erros']
+    .reduce((sum, key) => sum + asNumber(distribution[key]), 0);
+}
+
+function extractFileCounters(snapshot = {}) {
+  const totalAvaliado = pickFirstNumber(snapshot, [
+    'ficheirosAvaliadosTotal', 'totalFicheirosAvaliados', 'totalArquivosAvaliados',
+    'filesEvaluatedTotal'
+  ]) || distributionTotal(snapshot.distribuicaoResultados || {});
+
+  const atualProcessados = pickFirstNumber(snapshot, [
+    'ficheirosProcessadosCifActual', 'ficheirosProcessadosCifAtual', 'currentCifFilesProcessed',
+    'cifActual.ficheirosProcessados', 'cifAtual.ficheirosProcessados'
+  ]);
+
+  const atualTotal = pickFirstNumber(snapshot, [
+    'totalFicheirosCifActual', 'totalFicheirosCifAtual', 'currentCifFilesTotal',
+    'cifActual.totalFicheiros', 'cifAtual.totalFicheiros'
+  ]);
+
+  return { totalAvaliado, atualProcessados, atualTotal };
+}
+
+function optimiseHeroMetrics(snapshot = {}) {
+  const metrics = [...(snapshot.heroMetrics || [])];
+  const counters = extractFileCounters(snapshot);
+  const alreadyHasTotal = metrics.some(card => normaliseText(card.title).includes('ficheiros avaliados'));
+  if (!alreadyHasTotal) {
+    metrics.unshift({
+      title: 'Ficheiros Avaliados',
+      value: counters.totalAvaliado || 0,
+      sub: 'Total avaliado no dia actual',
+      icon: 'files',
+      color: cssVar('--teal') || '#14b8a6',
+    });
+  }
+  return metrics;
+}
+
+function optimiseHeroBottom(snapshot = {}) {
+  const counters = extractFileCounters(snapshot);
+  return (snapshot.heroBottom || []).map(card => {
+    if (normaliseText(card.title).includes('ficheiros avaliados') || normaliseText(card.label).includes('ficheiros avaliados')) {
+      const processed = counters.atualProcessados || asNumber(card.processados);
+      const total = counters.atualTotal || asNumber(card.total);
+      if (total > 0) {
+        return { ...card, title: 'Ficheiros Do CIF Actual', label: 'Ficheiros Do CIF Actual', value: `${processed}/${total}`, sub: 'Processados neste CIF' };
+      }
+      return { ...card, title: 'Ficheiros Do CIF Actual', label: 'Ficheiros Do CIF Actual', sub: 'Processados neste CIF' };
+    }
+    return card;
+  });
+}
+
+function normalise24hSeries(series = {}) {
+  const labels24 = Array.from({ length: 25 }, (_, hour) => `${String(hour).padStart(2, '0')}h`);
+  const keys = ['processados', 'sucesso', 'naoEncontrado', 'invalidos', 'erros'];
+  const out = { labels: labels24 };
+  keys.forEach(key => { out[key] = Array(25).fill(0); });
+
+  const labels = series.labels || [];
+  keys.forEach(key => {
+    const values = series[key] || [];
+    values.forEach((value, index) => {
+      const rawLabel = String(labels[index] ?? index);
+      const hourMatch = rawLabel.match(/(?:^|\D)(\d{1,2})(?::\d{2})?\s*h?/i);
+      const hour = hourMatch ? Number(hourMatch[1]) : index;
+      if (hour >= 0 && hour <= 24) out[key][hour] = asNumber(value);
+    });
+  });
+  return out;
+}
+
 function renderRows(id, rows) {
   document.getElementById(id).innerHTML = rows.map(row => `
     <div class="list-row">
@@ -402,6 +501,7 @@ function renderTimeline(events) {
 
 /* ── Charts ─────────────────────────────────────────────────────────────── */
 function renderExecutionChart(series) {
+  series = normalise24hSeries(series);
   const theme = apexTheme();
   mountChart('executionChart', {
     chart: { type: 'line', height: 260, toolbar: { show: false }, foreColor: 'rgba(255,255,255,.78)' },
@@ -416,7 +516,7 @@ function renderExecutionChart(series) {
       { name: 'Inválido',      data: series.invalidos     || [] },
       { name: 'Erro',          data: series.erros         || [] },
     ],
-    xaxis: { categories: series.labels || [], labels: { rotate: -45 } },
+    xaxis: { categories: series.labels || [], tickAmount: 24, labels: { rotate: -45 } },
     grid: { borderColor: cssVar('--line'), strokeDashArray: 4 },
     tooltip: { theme, shared: true, intersect: false },
     legend: { position: 'bottom' },
@@ -425,7 +525,7 @@ function renderExecutionChart(series) {
 
 function renderDonut(distribution) {
   const theme = apexTheme();
-  const values = [distribution.sucesso, distribution.naoEncontrado, distribution.invalidos, distribution.erros];
+  const values = [asNumber(distribution.sucesso), asNumber(distribution.naoEncontrado), asNumber(distribution.invalidos), asNumber(distribution.erros)];
   document.getElementById('donutTotal').textContent = values.reduce((a, v) => a + v, 0);
   mountChart('donutChart', {
     chart: { type: 'donut', height: 260, foreColor: 'rgba(255,255,255,.78)' },
@@ -441,6 +541,7 @@ function renderDonut(distribution) {
 }
 
 function renderErrors(errorData) {
+  errorData = filterStagingErrorData(errorData);
   const theme = apexTheme();
   mountChart('errorChart', {
     chart: { type: 'bar', height: 305, toolbar: { show: false }, foreColor: cssVar('--muted') },
@@ -468,10 +569,10 @@ async function loadSnapshot() {
   document.getElementById('heartbeatLabel').textContent   = `Último Heartbeat: ${snapshot.ultimoHeartbeat}`;
   document.getElementById('progressFill').style.width     = `${snapshot.percentualConcluido}%`;
 
-  renderMetricCards(document.getElementById('heroMetrics'), snapshot.heroMetrics || []);
-  renderMetricCards(document.getElementById('heroBottom'),  snapshot.heroBottom  || []);
+  renderMetricCards(document.getElementById('heroMetrics'), optimiseHeroMetrics(snapshot));
+  renderMetricCards(document.getElementById('heroBottom'),  optimiseHeroBottom(snapshot));
   renderCardGroups(snapshot.cardGroups || []);
-  renderRows('qualityRows', snapshot.qualityRows || []);
+  renderRows('qualityRows', filterStagingRows(snapshot.qualityRows || []));
   renderRows('modelRows',   snapshot.modelRows   || []);
   document.getElementById('payloadBlock').textContent = JSON.stringify(snapshot.payload || {}, null, 2);
 
@@ -503,7 +604,7 @@ async function loadTelemetry() {
 }
 
 async function loadHistory() {
-  const history = await api('/api/dashboard/history');
+  const history = await api(`/api/dashboard/history?${historyQueryString()}`);
   document.getElementById('historyCards').innerHTML = (history.cards || []).map(card => `
     <article class="card" style="--accent:${card.color}">
       <div class="card-head">
@@ -519,7 +620,8 @@ async function loadHistory() {
     const cls = row.estado.includes('Erro') ? 'error' : row.estado.includes('Execução') ? 'warning' : 'success';
     return `<tr>
       <td><strong>${row.idExecucao}</strong></td>
-      <td>${row.data}</td>
+      <td>${row.dataInicio || row.data || '—'}</td>
+      <td>${row.dataFim || '—'}</td>
       <td>${row.modo}</td>
       <td>${row.runtime}</td>
       <td><span class="status-inline ${cls}">${row.estado}</span></td>
@@ -736,7 +838,7 @@ function renderRestrictedSections() {
   const payload = document.getElementById('payloadBlock');
   if (payload) payload.textContent = 'Payload restrito. Faça login para visualizar.';
   const historyBody = document.getElementById('historyBody');
-  if (historyBody) historyBody.innerHTML = '<tr><td colspan="9">Histórico restrito. Faça login para visualizar.</td></tr>';
+  if (historyBody) historyBody.innerHTML = '<tr><td colspan="10">Histórico restrito. Faça login para visualizar.</td></tr>';
   const telemetryGrid = document.getElementById('telemetryGrid');
   if (telemetryGrid) telemetryGrid.innerHTML = restricted;
   const workersList = document.getElementById('workersList');

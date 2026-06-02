@@ -50,7 +50,7 @@ const DASHBOARD_USERS = new Set(
     .filter(Boolean)
 );
 const DASHBOARD_PASSWORD = (process.env.DASHBOARD_PASSWORD || 'Zeux').trim();
-const DASHBOARD_SESSION_TTL = parseInt(process.env.DASHBOARD_SESSION_TTL || '10', 10) * 60 * 1000;
+const DASHBOARD_SESSION_TTL = null; // sem expiração forçada; sessão termina apenas em logout
 const dashboardSessions = new Map();
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -181,12 +181,6 @@ function getDashboardSession(req) {
   const session = dashboardSessions.get(token);
   if (!session) return null;
 
-  // Verificar TTL
-  if (Date.now() - session.createdAt > DASHBOARD_SESSION_TTL) {
-    dashboardSessions.delete(token);
-    return null;
-  }
-
   return session;
 }
 
@@ -198,16 +192,8 @@ function requireDashboardAuth(req, res, next) {
   res.status(401).json({ ok: false, authenticated: false, restricted: true, message: 'Autenticação necessária para consultar esta secção.' });
 }
 
-/** Limpa sessões expiradas periodicamente */
-function purgeExpiredSessions() {
-  const now = Date.now();
-  for (const [token, session] of dashboardSessions) {
-    if (now - session.createdAt > DASHBOARD_SESSION_TTL) {
-      dashboardSessions.delete(token);
-    }
-  }
-}
-setInterval(purgeExpiredSessions, 5 * 60 * 1000);
+/** Sessões sem expiração forçada: mantidas até logout manual. */
+function purgeExpiredSessions() { /* no-op */ }
 
 /* ── Logging resumido ─────────────────────────────────────────────────────── */
 app.use((req, res, next) => {
@@ -364,7 +350,7 @@ app.post('/api/auth/login', (req, res) => {
     ok: true,
     token,
     user: normalizedUser,
-    expiresIn: DASHBOARD_SESSION_TTL,
+    expiresIn: null,
   });
 });
 
@@ -396,13 +382,105 @@ app.get('/api/auth/me', (req, res) => {
     authenticated: true,
     user: session.user,
     createdAt: new Date(session.createdAt).toISOString(),
-    expiresAt: new Date(session.createdAt + DASHBOARD_SESSION_TTL).toISOString(),
   });
 });
 
 /* ── Public/minimal dashboard helpers ───────────────────────────────────── */
 function hasDashboardAuth(req) {
   return !!getDashboardSession(req);
+}
+
+
+function normaliseText(value) {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function isStagingText(value) {
+  const t = normaliseText(value);
+  return t.includes('staging') || t.includes('ftp staging') || t.includes('preparacao staging') || t.includes('reservado staging');
+}
+
+function filterStagingRows(rows) {
+  return (rows || []).filter(row => !isStagingText(`${row.label ?? ''} ${row.value ?? ''}`));
+}
+
+function filterStagingErrorData(errorData = {}) {
+  const labels = errorData.labels || [];
+  const values = errorData.values || [];
+  const filtered = labels.map((label, index) => ({ label, value: values[index] ?? 0 }))
+    .filter(item => !isStagingText(item.label));
+  return { labels: filtered.map(i => i.label), values: filtered.map(i => i.value) };
+}
+
+function cleanSnapshotForDashboard(snapshot) {
+  if (!snapshot) return snapshot;
+  return {
+    ...snapshot,
+    qualityRows: filterStagingRows(snapshot.qualityRows || []),
+    erros: filterStagingErrorData(snapshot.erros || { labels: [], values: [] }),
+  };
+}
+
+function parseDateSafe(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function rangeBounds(query = {}) {
+  const range = String(query.range || '7D').toUpperCase();
+  const now = new Date();
+  let start = null;
+  let end = null;
+  if (range === 'CUSTOM') {
+    start = query.start ? new Date(`${query.start}T00:00:00`) : null;
+    end = query.end ? new Date(`${query.end}T23:59:59.999`) : null;
+  } else {
+    const days = range === '90D' ? 90 : range === '30D' ? 30 : 7;
+    end = now;
+    start = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+    start.setHours(0, 0, 0, 0);
+  }
+  return { start, end, range };
+}
+
+function filterHistoryItems(items = [], query = {}) {
+  const { start, end } = rangeBounds(query);
+  if (!start && !end) return items;
+  return items.filter(item => {
+    const date = parseDateSafe(item.dataInicio || item.data || item.DataHoraInicio || item.startedAt);
+    if (!date) return false;
+    if (start && date < start) return false;
+    if (end && date > end) return false;
+    return true;
+  });
+}
+
+function buildHistoryCards(items = []) {
+  const total = items.length;
+  const cifs = items.reduce((sum, item) => sum + Number(item.cifsProcessados ?? 0), 0);
+  const erros = items.reduce((sum, item) => sum + Number(item.erros ?? 0), 0);
+  const avgSuccess = total ? items.reduce((sum, item) => {
+    const raw = String(item.taxaSucesso ?? '0').replace('%', '').replace(',', '.');
+    const n = Number.parseFloat(raw);
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0) / total : 0;
+  return [
+    { title: 'Execuções', value: total, sub: 'No intervalo seleccionado', icon: 'history', color: '#3b63ff' },
+    { title: 'CIFs Processados', value: cifs, sub: 'Soma do intervalo', icon: 'workflow', color: '#00b85c' },
+    { title: 'Taxa Média Sucesso', value: `${avgSuccess.toFixed(1)}%`, sub: 'Média simples das execuções', icon: 'badge-check', color: '#14b8a6' },
+    { title: 'Erros', value: erros, sub: 'Erros de execução, sem Staging', icon: 'triangle-alert', color: '#e1323d' },
+  ];
+}
+
+function withFilteredHistory(history, query = {}) {
+  const items = filterHistoryItems(history.items || [], query);
+  const chart = {
+    labels: items.map(r => String(r.idExecucao || '—').slice(-6)),
+    cifsProcessados: items.map(r => Number(r.cifsProcessados ?? 0)),
+    taxaSucesso: items.map(r => Number.parseFloat(String(r.taxaSucesso || '0').replace('%', '').replace(',', '.')) || 0),
+  };
+  return { ...history, cards: buildHistoryCards(items), items, chart };
 }
 
 function minimalSnapshot(snapshot, runtime) {
@@ -459,7 +537,7 @@ app.get('/api/dashboard/health', (req, res) => {
 app.get('/api/dashboard/snapshot', (req, res) => {
   const runtime = req.query.runtime || 'Web';
   const p = store.payload;
-  const snap = p?.snapshot ? { ...p.snapshot, runtimeActual: p.snapshot.runtimeActual || runtime } : emptySnapshot(runtime);
+  const snap = cleanSnapshotForDashboard(p?.snapshot ? { ...p.snapshot, runtimeActual: p.snapshot.runtimeActual || runtime } : emptySnapshot(runtime));
 
   if (!hasDashboardAuth(req)) {
     return res.json(minimalSnapshot(snap, runtime));
@@ -495,12 +573,14 @@ app.get('/api/dashboard/history', requireDashboardAuth, (req, res) => {
   const history = store.sqlHistory || store.payload?.history;
   if (!history) return res.json(emptyHistory());
 
+  let formatted = history;
+
   /* Se vier como linhas raw da BD/tabela Worker, converter para o formato do frontend. */
   if (history.items && Array.isArray(history.items) && history.items[0]?.IdExecucao !== undefined) {
-    return res.json(formatSqlHistory(history));
+    formatted = formatSqlHistory(history);
   }
 
-  res.json(history);
+  res.json(withFilteredHistory(formatted, req.query));
 });
 
 /* GET /api/dashboard/export */
@@ -588,24 +668,26 @@ function purgeStalCommands() {
 /** Converte histórico SQL raw (formato TabelaVarredura) para o formato do frontend */
 function formatSqlHistory(history) {
   const items = (history.items || []).map(row => ({
-    idExecucao:      row.IdExecucao || '—',
-    data:            row.DataHoraInicio || '—',
-    modo:            row.Modo || '—',
-    runtime:         row.Runtime || '—',
-    estado:          row.EstadoFinal || row.EstadoSistema || '—',
+    idExecucao: row.IdExecucao || '—',
+    dataInicio: row.DataHoraInicio || row.DataInicio || row.StartedAt || '—',
+    dataFim: row.DataHoraFim || row.DataFim || row.FinishedAt || '—',
+    data: row.DataHoraInicio || row.DataInicio || row.StartedAt || '—',
+    modo: row.Modo || '—',
+    runtime: row.Runtime || '—',
+    estado: row.EstadoFinal || row.EstadoSistema || '—',
     cifsProcessados: row.CifsProcessados ?? 0,
-    taxaSucesso:     row.TaxaSucesso != null ? `${Number(row.TaxaSucesso).toFixed(1)}%` : '—',
-    erros:           row.CifsComErro ?? 0,
-    duracao:         calcDuration(row.DataHoraInicio, row.DataHoraFim),
+    taxaSucesso: row.TaxaSucesso != null ? `${Number(row.TaxaSucesso).toFixed(1)}%` : '—',
+    erros: row.CifsComErro ?? row.ErrosExecucao ?? 0,
+    duracao: calcDuration(row.DataHoraInicio || row.DataInicio || row.StartedAt, row.DataHoraFim || row.DataFim || row.FinishedAt),
   }));
 
   const chart = {
-    labels:          items.map(r => r.idExecucao.slice(-6)),
+    labels: items.map(r => String(r.idExecucao).slice(-6)),
     cifsProcessados: items.map(r => r.cifsProcessados),
-    taxaSucesso:     items.map(r => parseFloat(r.taxaSucesso) || 0),
+    taxaSucesso: items.map(r => parseFloat(String(r.taxaSucesso).replace('%', '')) || 0),
   };
 
-  return { cards: [], items, chart };
+  return { cards: buildHistoryCards(items), items, chart };
 }
 
 function calcDuration(start, end) {
